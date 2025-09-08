@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Train Random Forest model for Drug-Disease link prediction.
+"""Train models with automatic versioning and provenance tracking.
 
-This script loads node embeddings and ground truth data to train and evaluate
-a Random Forest classifier for predicting Drug-treats-Disease relationships.
+This script trains Random Forest models using embeddings and automatically manages
+versioned output directories with full provenance metadata.
 """
 import os
 import argparse
@@ -18,7 +18,66 @@ from sklearn.metrics import (
 )
 import pickle
 import json
+from datetime import datetime
 from collections import defaultdict
+
+
+def get_next_model_version(models_dir):
+    """Find the next available model version number.
+    
+    Args:
+        models_dir: Base models directory
+        
+    Returns:
+        int: Next available version number
+    """
+    if not os.path.exists(models_dir):
+        return 0
+    
+    existing_versions = []
+    for item in os.listdir(models_dir):
+        if item.startswith("model_") and os.path.isdir(os.path.join(models_dir, item)):
+            try:
+                version_num = int(item.split("_")[1])
+                existing_versions.append(version_num)
+            except (IndexError, ValueError):
+                continue
+    
+    return max(existing_versions) + 1 if existing_versions else 0
+
+
+def get_embedding_info(embeddings_file):
+    """Extract embedding metadata from file.
+    
+    Args:
+        embeddings_file: Path to embeddings file
+        
+    Returns:
+        dict: Embedding info including dimensions and count
+    """
+    if not os.path.exists(embeddings_file):
+        return {"error": f"Embeddings file not found: {embeddings_file}"}
+    
+    with open(embeddings_file, 'r') as f:
+        header = f.readline().strip().split()
+        num_nodes, embedding_dim = int(header[0]), int(header[1])
+    
+    # Try to get provenance info if available
+    embedding_dir = os.path.dirname(embeddings_file)
+    provenance_file = os.path.join(embedding_dir, "provenance.json")
+    
+    embedding_info = {
+        "embeddings_file": embeddings_file,
+        "num_nodes": num_nodes,
+        "embedding_dim": embedding_dim
+    }
+    
+    if os.path.exists(provenance_file):
+        with open(provenance_file, 'r') as f:
+            embedding_provenance = json.load(f)
+            embedding_info["embedding_provenance"] = embedding_provenance
+    
+    return embedding_info
 
 
 def load_embeddings(embeddings_file):
@@ -54,7 +113,7 @@ def load_ground_truth(ground_truth_file, embeddings=None):
         embeddings: Dict of embeddings to filter against (optional)
         
     Returns:
-        set: Set of (drug_id, disease_id) tuples representing positive examples
+        tuple: (positive_pairs, ground_truth_stats)
     """
     df = pd.read_csv(ground_truth_file, sep=',')
     
@@ -73,11 +132,11 @@ def load_ground_truth(ground_truth_file, embeddings=None):
     
     # Remove rows with missing values
     df_clean = df[[drug_col, disease_col]].dropna()
+    initial_count = len(df_clean)
     
     # Filter to only include pairs where both drug and disease have embeddings
     if embeddings is not None:
         print(f"Filtering ground truth to only include nodes with embeddings...")
-        initial_count = len(df_clean)
         df_clean = df_clean[
             df_clean[drug_col].isin(embeddings) & 
             df_clean[disease_col].isin(embeddings)
@@ -85,9 +144,19 @@ def load_ground_truth(ground_truth_file, embeddings=None):
         print(f"Filtered from {initial_count} to {len(df_clean)} pairs with embeddings")
     
     positive_pairs = set(zip(df_clean[drug_col], df_clean[disease_col]))
+    
+    ground_truth_stats = {
+        "ground_truth_file": ground_truth_file,
+        "total_rows": len(df),
+        "clean_rows": initial_count,
+        "final_positive_pairs": len(positive_pairs),
+        "unique_drugs": len(set(pair[0] for pair in positive_pairs)),
+        "unique_diseases": len(set(pair[1] for pair in positive_pairs))
+    }
+    
     print(f"Final positive pairs: {len(positive_pairs)}")
     
-    return positive_pairs
+    return positive_pairs, ground_truth_stats
 
 
 def create_feature_vectors(embeddings, drug_disease_pairs):
@@ -161,42 +230,82 @@ def extract_node_ids_from_positives(positive_pairs):
     return drug_ids, disease_ids
 
 
-def train_and_evaluate(graph_dir, ground_truth_file, output_dir, negative_ratio=1):
-    """Main training and evaluation pipeline.
+def train_model(graph_dir,
+                               ground_truth_file,
+                               embeddings_version=None,
+                               negative_ratio=1,
+                               n_estimators=100,
+                               max_depth=10,
+                               random_state=42):
+    """Train model with automatic versioning and provenance.
     
     Args:
-        graph_dir: Path to graph directory (e.g., graphs/CCDD)
-        ground_truth_file: Path to ground truth file
-        output_dir: Directory to save model and results
+        graph_dir: Path to graph directory (e.g., graphs/robokop_base/CCDD)
+        ground_truth_file: Path to ground truth CSV file
+        embeddings_version: Specific embeddings version to use (e.g., "embeddings_2")
         negative_ratio: Ratio of negative to positive samples
+        n_estimators: Number of trees in random forest
+        max_depth: Maximum depth of trees
+        random_state: Random state for reproducibility
+        
+    Returns:
+        str: Path to the generated model directory
     """
+    # Determine embeddings file
+    if embeddings_version:
+        embeddings_file = os.path.join(graph_dir, "embeddings", embeddings_version, "embeddings.emb")
+    else:
+        # Use the default embeddings.emb file
+        embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
+    
+    if not os.path.exists(embeddings_file):
+        raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
+    
+    # Determine output directory structure
+    base_dir = graph_dir  # e.g., graphs/robokop_base/CCDD
+    models_dir = os.path.join(base_dir, "models")
+    
+    # Create models directory if it doesn't exist
+    os.makedirs(models_dir, exist_ok=True)
+    
+    # Get next version number
+    version = get_next_model_version(models_dir)
+    version_dir = os.path.join(models_dir, f"model_{version}")
+    os.makedirs(version_dir, exist_ok=True)
+    
+    print(f"Training model version {version}")
+    print(f"Input embeddings: {embeddings_file}")
+    print(f"Output: {version_dir}")
+    
+    # Record start time
+    start_time = datetime.now()
+    
+    # Get embedding info for provenance
+    embedding_info = get_embedding_info(embeddings_file)
+    
     # Load embeddings
-    embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
     embeddings = load_embeddings(embeddings_file)
     
     # Load ground truth - filter to only nodes with embeddings
-    positive_pairs = load_ground_truth(ground_truth_file, embeddings)
+    positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
     
     # Extract drug and disease IDs from filtered positive examples
     drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
     
-    # Create feature vectors for positive samples (guaranteed to work now)
+    # Create feature vectors for positive samples
     pos_features, pos_labels = create_feature_vectors(embeddings, positive_pairs)
     pos_targets = np.ones(len(pos_features))
     
     print(f"Created {len(pos_features)} positive feature vectors")
     
-    # Calculate target negative count
-    target_negative_count = len(pos_features) * negative_ratio
-    
-    # Generate exact number of negative samples (no need for oversampling)
+    # Generate negative samples
     negative_pairs = generate_negative_samples(positive_pairs, drug_ids, disease_ids, negative_ratio)
     
-    # Create feature vectors for negative samples (guaranteed to work)
+    # Create feature vectors for negative samples
     neg_features, neg_labels = create_feature_vectors(embeddings, negative_pairs)
     neg_targets = np.zeros(len(neg_features))
     
-    print(f"Created {len(neg_features)} negative feature vectors (target was {target_negative_count})")
+    print(f"Created {len(neg_features)} negative feature vectors")
     
     # Combine positive and negative samples
     X = np.vstack([pos_features, neg_features])
@@ -207,15 +316,15 @@ def train_and_evaluate(graph_dir, ground_truth_file, output_dir, negative_ratio=
     
     # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
+        X, y, test_size=0.2, random_state=random_state, stratify=y
     )
     
     # Train Random Forest
     print("Training Random Forest...")
     rf = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=10,
-        random_state=42,
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        random_state=random_state,
         n_jobs=-1
     )
     rf.fit(X_train, y_train)
@@ -234,27 +343,70 @@ def train_and_evaluate(graph_dir, ground_truth_file, output_dir, negative_ratio=
         'average_precision': average_precision_score(y_test, y_pred_proba)
     }
     
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
+    # Record end time
+    end_time = datetime.now()
+    duration = (end_time - start_time).total_seconds()
     
     # Save model
-    model_file = os.path.join(output_dir, "rf_model.pkl")
+    model_file = os.path.join(version_dir, "rf_model.pkl")
     with open(model_file, 'wb') as f:
         pickle.dump(rf, f)
     
     # Save results
-    results_file = os.path.join(output_dir, "results.json")
+    results_file = os.path.join(version_dir, "results.json")
     with open(results_file, 'w') as f:
         json.dump(metrics, f, indent=2)
     
+    # Create comprehensive provenance metadata
+    provenance = {
+        "timestamp": start_time.isoformat(),
+        "duration_seconds": duration,
+        "script": "train_model.py",
+        "version": f"model_{version}",
+        "algorithm": "random_forest",
+        "model_file": model_file,
+        "results_file": results_file,
+        "input_data": {
+            "graph_dir": graph_dir,
+            "embeddings_file": embeddings_file,
+            "embeddings_version": embeddings_version,
+            "embedding_info": embedding_info,
+            "ground_truth": ground_truth_stats
+        },
+        "model_parameters": {
+            "n_estimators": n_estimators,
+            "max_depth": max_depth,
+            "random_state": random_state,
+            "negative_ratio": negative_ratio
+        },
+        "data_splits": {
+            "total_samples": len(X),
+            "positive_samples": len(pos_features),
+            "negative_samples": len(neg_features),
+            "train_samples": len(X_train),
+            "test_samples": len(X_test),
+            "feature_dimension": X.shape[1]
+        },
+        "performance_metrics": metrics,
+        "description": f"Random Forest model version {version} trained on {len(pos_features)} positive and {len(neg_features)} negative samples"
+    }
+    
+    # Save provenance file
+    provenance_file = os.path.join(version_dir, "provenance.json")
+    with open(provenance_file, 'w') as f:
+        json.dump(provenance, f, indent=2)
+    
     # Save detailed report
-    report_file = os.path.join(output_dir, "classification_report.txt")
+    report_file = os.path.join(version_dir, "classification_report.txt")
     with open(report_file, 'w') as f:
         f.write("Classification Report\n")
         f.write("===================\n\n")
+        f.write(f"Model Version: {version}\n")
         f.write(f"Dataset: {len(X)} total samples\n")
         f.write(f"Positive samples: {len(pos_features)}\n")
-        f.write(f"Negative samples: {len(neg_features)}\n\n")
+        f.write(f"Negative samples: {len(neg_features)}\n")
+        f.write(f"Negative ratio: {negative_ratio}\n")
+        f.write(f"Training time: {duration:.2f} seconds\n\n")
         
         for metric, value in metrics.items():
             f.write(f"{metric}: {value:.4f}\n")
@@ -265,35 +417,51 @@ def train_and_evaluate(graph_dir, ground_truth_file, output_dir, negative_ratio=
         f.write("\nConfusion Matrix:\n")
         f.write(str(confusion_matrix(y_test, y_pred)))
     
+    print(f"Provenance saved: {provenance_file}")
+    print(f"Model saved: {model_file}")
+    print(f"Results saved: {results_file}")
+    print(f"Duration: {duration:.2f} seconds")
+    
     # Print results
     print("\nResults:")
     for metric, value in metrics.items():
         print(f"{metric}: {value:.4f}")
     
-    print(f"\nModel saved to: {model_file}")
-    print(f"Results saved to: {results_file}")
-    print(f"Detailed report saved to: {report_file}")
+    return version_dir
 
 
 def main():
     """Command line interface."""
-    parser = argparse.ArgumentParser(description="Train Random Forest for Drug-Disease prediction")
+    parser = argparse.ArgumentParser(description="Train Random Forest model with versioning and provenance")
     parser.add_argument("--graph-dir", required=True,
-                       help="Path to graph directory containing embeddings (e.g., graphs/CCDD)")
+                       help="Path to graph directory (e.g., graphs/robokop_base/CCDD)")
     parser.add_argument("--ground-truth", required=True,
-                       help="Path to ground truth file with Drug_ID and Disease_ID columns")
-    parser.add_argument("--output-dir", 
-                       help="Output directory (default: {graph_dir}/models)")
+                       help="Path to ground truth CSV file")
+    parser.add_argument("--embeddings-version", 
+                       help="Specific embeddings version to use (e.g., embeddings_2)")
     parser.add_argument("--negative-ratio", type=int, default=1,
                        help="Ratio of negative to positive samples (default: 1)")
+    parser.add_argument("--n-estimators", type=int, default=100,
+                       help="Number of trees in random forest (default: 100)")
+    parser.add_argument("--max-depth", type=int, default=10,
+                       help="Maximum depth of trees (default: 10)")
+    parser.add_argument("--random-state", type=int, default=42,
+                       help="Random state for reproducibility (default: 42)")
     
     args = parser.parse_args()
     
-    # Set default output directory
-    if not args.output_dir:
-        args.output_dir = os.path.join(args.graph_dir, "models")
+    version_dir = train_model(
+        graph_dir=args.graph_dir,
+        ground_truth_file=args.ground_truth,
+        embeddings_version=args.embeddings_version,
+        negative_ratio=args.negative_ratio,
+        n_estimators=args.n_estimators,
+        max_depth=args.max_depth,
+        random_state=args.random_state
+    )
     
-    train_and_evaluate(args.graph_dir, args.ground_truth, args.output_dir, args.negative_ratio)
+    print(f"\nModel training complete!")
+    print(f"Output directory: {version_dir}")
 
 
 if __name__ == "__main__":
