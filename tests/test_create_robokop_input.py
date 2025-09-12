@@ -8,7 +8,7 @@ from pathlib import Path
 
 from src.graph_modification.create_robokop_input import (
     keep_CCDD, keep_CGD, load_typemap, write_pecanpy_input, 
-    check_accepted, remove_subclass_and_cid, has_cd_edge
+    check_accepted, remove_subclass_and_cid, has_cd_edge, create_robokop_input
 )
 
 
@@ -224,7 +224,7 @@ def test_write_pecanpy_input(temp_edges_file, sample_nodes):
         typemap[node["id"]] = set(node["category"])
     
     with tempfile.TemporaryDirectory() as temp_dir:
-        write_pecanpy_input(temp_edges_file, temp_dir, keep_CCDD, typemap)
+        edge_count = write_pecanpy_input(temp_edges_file, temp_dir, keep_CCDD, typemap)
         
         output_file = os.path.join(temp_dir, "edges.edg")
         assert os.path.exists(output_file)
@@ -235,6 +235,7 @@ def test_write_pecanpy_input(temp_edges_file, sample_nodes):
         # Should have no edges since sample_edges doesn't have CC or DD edges
         # and CD edges are filtered out for data leakage prevention
         assert len(lines) == 0
+        assert edge_count == 0
 
 
 def test_write_pecanpy_input_file_format():
@@ -259,12 +260,14 @@ def test_write_pecanpy_input_file_format():
     
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            write_pecanpy_input(temp_edges_file, temp_dir, keep_CCDD, typemap)
+            edge_count = write_pecanpy_input(temp_edges_file, temp_dir, keep_CCDD, typemap)
             
             output_file = os.path.join(temp_dir, "edges.edg")
             
             with open(output_file, 'r') as f:
-                for line in f:
+                lines = list(f)
+                assert edge_count == len(lines), f"Edge count {edge_count} doesn't match file lines {len(lines)}"
+                for line in lines:
                     # Each line should be tab-separated with 2 fields
                     parts = line.strip().split('\t')
                     assert len(parts) == 2
@@ -272,3 +275,65 @@ def test_write_pecanpy_input_file_format():
                     assert ':' in parts[0] and ':' in parts[1]
     finally:
         os.unlink(temp_edges_file)
+
+
+def test_create_robokop_input_new_interface():
+    """Test the updated create_robokop_input function with new interface."""
+    # Create temporary input directory structure
+    with tempfile.TemporaryDirectory() as temp_base:
+        input_dir = os.path.join(temp_base, "input")
+        os.makedirs(input_dir)
+        
+        # Create test nodes and edges files
+        sample_nodes = [
+            {"id": "CHEBI:123", "category": ["biolink:ChemicalEntity"]},
+            {"id": "CHEBI:456", "category": ["biolink:ChemicalEntity"]}
+        ]
+        sample_edges = [
+            {"subject": "CHEBI:123", "predicate": "biolink:interacts_with", "object": "CHEBI:456"}
+        ]
+        
+        # Write test files
+        nodes_file = os.path.join(input_dir, "test_nodes.jsonl")
+        edges_file = os.path.join(input_dir, "test_edges.jsonl")
+        
+        with open(nodes_file, 'w') as f:
+            for node in sample_nodes:
+                f.write(json.dumps(node) + '\n')
+                
+        with open(edges_file, 'w') as f:
+            for edge in sample_edges:
+                f.write(json.dumps(edge) + '\n')
+        
+        # Test the new interface
+        output_dir = os.path.join(temp_base, "output")
+        create_robokop_input(
+            input_base_dir=input_dir,
+            nodes_filename="test_nodes.jsonl",
+            edges_filename="test_edges.jsonl", 
+            style="CCDD",
+            output_dir=output_dir
+        )
+        
+        # Verify output was created
+        expected_output = os.path.join(output_dir, "CCDD", "graph", "edges.edg")
+        assert os.path.exists(expected_output), f"Output file not found: {expected_output}"
+        
+        # Verify content
+        with open(expected_output, 'r') as f:
+            lines = f.readlines()
+            assert len(lines) == 1, "Should have exactly one CC edge"
+            assert "CHEBI:123\tCHEBI:456" in lines[0], "Should contain the CC edge"
+        
+        # Verify provenance file was created
+        provenance_file = os.path.join(output_dir, "CCDD", "graph", "provenance.json")
+        assert os.path.exists(provenance_file), f"Provenance file not found: {provenance_file}"
+        
+        with open(provenance_file, 'r') as f:
+            provenance = json.load(f)
+            assert provenance["style"] == "CCDD"
+            assert provenance["edge_count"] == 1
+            assert provenance["nodes_filename"] == "test_nodes.jsonl" 
+            assert provenance["edges_filename"] == "test_edges.jsonl"
+            assert "timestamp" in provenance
+            assert "script" in provenance

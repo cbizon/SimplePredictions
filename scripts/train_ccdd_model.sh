@@ -30,7 +30,7 @@ echo "Ground truth file found: $GROUND_TRUTH_FILE"
 
 # Train the model
 echo "Training Random Forest model..."
-/opt/anaconda3/envs/simplepredictions/bin/python src/modeling/train_rf_model.py \
+/opt/anaconda3/envs/simplepredictions/bin/python src/modeling/train_model.py \
     --graph-dir graphs/CCDD \
     --ground-truth "$GROUND_TRUTH_FILE" \
     --negative-ratio 1

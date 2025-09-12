@@ -3,6 +3,9 @@
 
 This script evaluates trained models and automatically manages
 versioned output directories with full provenance metadata.
+
+Supports both single model evaluation and multi-model comparison with
+comparative plots and comprehensive provenance tracking.
 """
 import os
 import argparse
@@ -16,7 +19,11 @@ import seaborn as sns
 from datetime import datetime
 from pathlib import Path
 
-from .train_model import load_embeddings, load_ground_truth, create_feature_vectors, extract_node_ids_from_positives, generate_negative_samples
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from modeling.train_model import load_embeddings, load_ground_truth, create_feature_vectors, extract_node_ids_from_positives, generate_negative_samples
 from sklearn.model_selection import train_test_split
 
 
@@ -125,52 +132,85 @@ def calculate_hits_at_k(y_true, y_scores, k_values):
     return hits_at_k
 
 
-def plot_ranking_metrics(precision_at_k, recall_at_k, hits_at_k, k_values, output_dir):
-    """Create plots for ranking metrics."""
+def plot_ranking_metrics(metrics_data, output_dir):
+    """Create plots for ranking metrics with support for multiple models.
+    
+    Args:
+        metrics_data: Dictionary with model labels as keys and their metrics as values
+                     Format: {label: {precision_at_k, recall_at_k, hits_at_k, k_values}}
+        output_dir: Output directory for plots
+    """
     plt.style.use('default')
     sns.set_palette("husl")
     
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle('Drug-Disease Prediction Ranking Metrics', fontsize=16)
+    fig.suptitle('Drug-Disease Prediction Ranking Metrics Comparison', fontsize=16)
+    
+    # Get all k values (union of all models)
+    all_k_values = set()
+    for model_data in metrics_data.values():
+        all_k_values.update(model_data['k_values'])
+    all_k_values = sorted(all_k_values)
     
     # Plot 1: Precision@K
-    k_vals = [k for k in k_values if not np.isnan(precision_at_k[k])]
-    prec_vals = [precision_at_k[k] for k in k_vals]
+    for i, (label, model_data) in enumerate(metrics_data.items()):
+        k_vals = [k for k in model_data['k_values'] if not np.isnan(model_data['precision_at_k'][k])]
+        prec_vals = [model_data['precision_at_k'][k] for k in k_vals]
+        axes[0, 0].plot(k_vals, prec_vals, 'o-', linewidth=2, markersize=6, label=label)
     
-    axes[0, 0].plot(k_vals, prec_vals, 'o-', linewidth=2, markersize=6)
     axes[0, 0].set_xlabel('K (Top Predictions)')
     axes[0, 0].set_ylabel('Precision@K')
     axes[0, 0].set_title('Precision@K: Accuracy of Top K Predictions')
     axes[0, 0].grid(True, alpha=0.3)
     axes[0, 0].set_ylim(0, 1)
+    if len(metrics_data) > 1:
+        axes[0, 0].legend()
     
     # Plot 2: Recall@K
-    recall_vals = [recall_at_k[k] for k in k_vals]
+    for i, (label, model_data) in enumerate(metrics_data.items()):
+        k_vals = [k for k in model_data['k_values'] if not np.isnan(model_data['recall_at_k'][k])]
+        recall_vals = [model_data['recall_at_k'][k] for k in k_vals]
+        axes[0, 1].plot(k_vals, recall_vals, 'o-', linewidth=2, markersize=6, label=label)
     
-    axes[0, 1].plot(k_vals, recall_vals, 'o-', linewidth=2, markersize=6, color='orange')
     axes[0, 1].set_xlabel('K (Top Predictions)')
     axes[0, 1].set_ylabel('Recall@K')
     axes[0, 1].set_title('Recall@K: Coverage of True Positives')
     axes[0, 1].grid(True, alpha=0.3)
     axes[0, 1].set_ylim(0, 1)
+    if len(metrics_data) > 1:
+        axes[0, 1].legend()
     
     # Plot 3: Hits@K
-    hits_vals = [hits_at_k[k] for k in k_vals]
+    for i, (label, model_data) in enumerate(metrics_data.items()):
+        k_vals = [k for k in model_data['k_values'] if not np.isnan(model_data['hits_at_k'][k])]
+        hits_vals = [model_data['hits_at_k'][k] for k in k_vals]
+        axes[1, 0].plot(k_vals, hits_vals, 'o-', linewidth=2, markersize=6, label=label)
     
-    axes[1, 0].plot(k_vals, hits_vals, 'o-', linewidth=2, markersize=6, color='green')
     axes[1, 0].set_xlabel('K (Top Predictions)')
     axes[1, 0].set_ylabel('Hits@K')
     axes[1, 0].set_title('Hits@K: At Least One Hit in Top K')
     axes[1, 0].grid(True, alpha=0.3)
     axes[1, 0].set_ylim(0, 1)
+    if len(metrics_data) > 1:
+        axes[1, 0].legend()
     
-    # Plot 4: All metrics together
+    # Plot 4: All metrics for first model (or single model if only one)
+    first_model_data = next(iter(metrics_data.values()))
+    k_vals = [k for k in first_model_data['k_values'] if not np.isnan(first_model_data['precision_at_k'][k])]
+    prec_vals = [first_model_data['precision_at_k'][k] for k in k_vals]
+    recall_vals = [first_model_data['recall_at_k'][k] for k in k_vals]
+    hits_vals = [first_model_data['hits_at_k'][k] for k in k_vals]
+    
     axes[1, 1].plot(k_vals, prec_vals, 'o-', label='Precision@K', linewidth=2, markersize=4)
     axes[1, 1].plot(k_vals, recall_vals, 'o-', label='Recall@K', linewidth=2, markersize=4)
     axes[1, 1].plot(k_vals, hits_vals, 'o-', label='Hits@K', linewidth=2, markersize=4)
     axes[1, 1].set_xlabel('K (Top Predictions)')
     axes[1, 1].set_ylabel('Metric Value')
-    axes[1, 1].set_title('All Ranking Metrics')
+    if len(metrics_data) == 1:
+        axes[1, 1].set_title('All Ranking Metrics')
+    else:
+        first_model_label = next(iter(metrics_data.keys()))
+        axes[1, 1].set_title(f'All Ranking Metrics - {first_model_label}')
     axes[1, 1].legend()
     axes[1, 1].grid(True, alpha=0.3)
     axes[1, 1].set_ylim(0, 1)
@@ -185,22 +225,35 @@ def plot_ranking_metrics(precision_at_k, recall_at_k, hits_at_k, k_values, outpu
     plt.close()
 
 
-def create_precision_recall_curve(y_true, y_scores, output_dir):
-    """Create precision-recall curve plot."""
-    precision, recall, thresholds = precision_recall_curve(y_true, y_scores)
+def create_precision_recall_curve(pr_curve_data, output_dir):
+    """Create precision-recall curve plot with support for multiple models.
     
+    Args:
+        pr_curve_data: Dictionary with model labels as keys and their PR data as values
+                      Format: {label: {'y_true': array, 'y_scores': array}}
+        output_dir: Output directory for plots
+    """
     plt.figure(figsize=(10, 8))
-    plt.plot(recall, precision, linewidth=2, label=f'PR Curve')
+    
+    baselines = []
+    for label, data in pr_curve_data.items():
+        precision, recall, thresholds = precision_recall_curve(data['y_true'], data['y_scores'])
+        plt.plot(recall, precision, linewidth=2, label=label)
+        
+        # Calculate baseline for this model
+        baseline = np.sum(data['y_true']) / len(data['y_true'])
+        baselines.append(baseline)
+    
     plt.xlabel('Recall')
     plt.ylabel('Precision') 
-    plt.title('Precision-Recall Curve')
+    plt.title('Precision-Recall Curve Comparison')
     plt.grid(True, alpha=0.3)
-    plt.legend()
     
-    # Add baseline (random classifier)
-    baseline = np.sum(y_true) / len(y_true)
-    plt.axhline(y=baseline, color='red', linestyle='--', 
-                label=f'Random Baseline ({baseline:.3f})')
+    # Add baseline (use average baseline if multiple models)
+    avg_baseline = np.mean(baselines)
+    plt.axhline(y=avg_baseline, color='red', linestyle='--', 
+                label=f'Random Baseline ({avg_baseline:.3f})')
+    
     plt.legend()
     
     # Save plot
@@ -269,15 +322,7 @@ def evaluate_model_with_provenance(model_path,
     
     # Load embeddings and ground truth
     embeddings = load_embeddings(embeddings_file)
-    positive_pairs = load_ground_truth(ground_truth_file, embeddings)
-    
-    # Create ground truth stats manually for provenance
-    ground_truth_stats = {
-        "ground_truth_file": ground_truth_file,
-        "final_positive_pairs": len(positive_pairs),
-        "unique_drugs": len(set(pair[0] for pair in positive_pairs)),
-        "unique_diseases": len(set(pair[1] for pair in positive_pairs))
-    }
+    positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
     drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
     
     # Need to determine negative_ratio from model provenance
@@ -329,9 +374,24 @@ def evaluate_model_with_provenance(model_path,
     recall_at_k = calculate_recall_at_k(y_true, y_scores, k_values)
     hits_at_k = calculate_hits_at_k(y_true, y_scores, k_values)
     
-    # Create plots
-    plot_ranking_metrics(precision_at_k, recall_at_k, hits_at_k, k_values, version_dir)
-    create_precision_recall_curve(y_true, y_scores, version_dir)
+    # Create plots for single model
+    single_model_metrics = {
+        os.path.basename(model_path): {
+            'precision_at_k': precision_at_k,
+            'recall_at_k': recall_at_k, 
+            'hits_at_k': hits_at_k,
+            'k_values': k_values
+        }
+    }
+    plot_ranking_metrics(single_model_metrics, version_dir)
+    
+    single_model_pr_data = {
+        os.path.basename(model_path): {
+            'y_true': y_true,
+            'y_scores': y_scores
+        }
+    }
+    create_precision_recall_curve(single_model_pr_data, version_dir)
     
     # Record end time
     end_time = datetime.now()
@@ -417,29 +477,312 @@ def evaluate_model_with_provenance(model_path,
     return version_dir
 
 
+def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
+    """Evaluate multiple models with comparative analysis and provenance.
+    
+    Args:
+        model_configs: List of dictionaries, each containing:
+                      - model_path: Path to model file
+                      - graph_dir: Path to graph directory  
+                      - label: Human-readable label for the model
+                      - model_version: Optional model version
+                      - embeddings_version: Optional embeddings version
+        ground_truth_file: Path to ground truth CSV file
+        
+    Returns:
+        str: Path to the generated evaluation directory
+    """
+    # Validate all model files first
+    for config in model_configs:
+        if not os.path.exists(config['model_path']):
+            raise FileNotFoundError(f"Model file not found: {config['model_path']}")
+    
+    # Determine output directory structure
+    evaluations_base_dir = "evaluations"
+    os.makedirs(evaluations_base_dir, exist_ok=True)
+    
+    # Get next version number
+    version = get_next_evaluation_version(evaluations_base_dir)
+    version_dir = os.path.join(evaluations_base_dir, f"evaluation_{version}")
+    os.makedirs(version_dir, exist_ok=True)
+    
+    print(f"Running multi-model evaluation version {version}")
+    print(f"Models: {[config['label'] for config in model_configs]}")
+    print(f"Output: {version_dir}")
+    
+    start_time = datetime.now()
+    
+    # Store results for each model
+    all_results = {}
+    all_metrics_data = {}
+    all_pr_data = {}
+    all_provenance = []
+    
+    # Evaluate each model
+    for i, config in enumerate(model_configs):
+        model_path = config['model_path']
+        graph_dir = config['graph_dir']
+        label = config['label']
+        model_version = config.get('model_version')
+        embeddings_version = config.get('embeddings_version')
+        
+        print(f"\nEvaluating model {i+1}/{len(model_configs)}: {label}")
+        print(f"  Model: {model_path}")
+        
+        # Get model info for provenance
+        model_info = get_model_info(model_path)
+        
+        # Load the trained model
+        with open(model_path, 'rb') as f:
+            rf_model = pickle.load(f)
+        
+        # Determine embeddings file
+        if embeddings_version:
+            embeddings_file = os.path.join(graph_dir, "embeddings", embeddings_version, "embeddings.emb")
+        else:
+            embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
+        
+        if not os.path.exists(embeddings_file):
+            raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
+        
+        # Load embeddings and ground truth
+        embeddings = load_embeddings(embeddings_file)
+        positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
+        drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
+        
+        # Get negative ratio from model provenance
+        negative_ratio = 1
+        if "model_provenance" in model_info and "model_parameters" in model_info["model_provenance"]:
+            negative_ratio = model_info["model_provenance"]["model_parameters"].get("negative_ratio", 1)
+        
+        print(f"  Using negative_ratio={negative_ratio} from model provenance")
+        
+        # Recreate the EXACT same data preparation as training
+        pos_features, pos_labels = create_feature_vectors(embeddings, positive_pairs)
+        pos_targets = np.ones(len(pos_features))
+        
+        # Generate same negative samples (with same random seed)
+        negative_pairs = generate_negative_samples(positive_pairs, drug_ids, disease_ids, negative_ratio)
+        neg_features, neg_labels = create_feature_vectors(embeddings, negative_pairs)
+        neg_targets = np.zeros(len(neg_features))
+        
+        # Combine positive and negative samples
+        X = np.vstack([pos_features, neg_features])
+        y = np.hstack([pos_targets, neg_targets])
+        pair_labels = pos_labels + neg_labels
+        
+        # Recreate the EXACT same train-test split
+        X_train, X_test, y_train, y_test, indices_train, indices_test = train_test_split(
+            X, y, range(len(pair_labels)), test_size=0.2, random_state=42, stratify=y
+        )
+        
+        # Generate predictions ONLY for test set
+        y_scores = rf_model.predict_proba(X_test)[:, 1]
+        y_true = y_test
+        
+        print(f"  Test predictions: {len(y_scores)} ({np.sum(y_true)} positive, {len(y_true) - np.sum(y_true)} negative)")
+        
+        # Define K values to evaluate
+        k_values = [1, 5, 10, 20, 50, 100, 200, 500, 1000]
+        k_values = [k for k in k_values if k <= len(y_scores)]
+        
+        # Calculate ranking metrics
+        precision_at_k = calculate_precision_at_k(y_true, y_scores, k_values)
+        recall_at_k = calculate_recall_at_k(y_true, y_scores, k_values)
+        hits_at_k = calculate_hits_at_k(y_true, y_scores, k_values)
+        
+        # Store results for this model
+        all_results[label] = {
+            'precision_at_k': precision_at_k,
+            'recall_at_k': recall_at_k,
+            'hits_at_k': hits_at_k,
+            'k_values': k_values,
+            'total_test_predictions': len(y_scores),
+            'test_positives': int(np.sum(y_true)),
+            'test_negatives': int(len(y_true) - np.sum(y_true)),
+            'negative_ratio_used': negative_ratio
+        }
+        
+        # Store data for plots
+        all_metrics_data[label] = {
+            'precision_at_k': precision_at_k,
+            'recall_at_k': recall_at_k,
+            'hits_at_k': hits_at_k,
+            'k_values': k_values
+        }
+        
+        all_pr_data[label] = {
+            'y_true': y_true,
+            'y_scores': y_scores
+        }
+        
+        # Store provenance for this model
+        model_provenance = {
+            "model_label": label,
+            "model_info": model_info,
+            "input_data": {
+                "graph_dir": graph_dir,
+                "embeddings_file": embeddings_file,
+                "embeddings_version": embeddings_version,
+                "ground_truth": ground_truth_stats
+            },
+            "evaluation_parameters": {
+                "k_values": k_values,
+                "negative_ratio_used": negative_ratio,
+                "test_size": 0.2,
+                "random_state": 42
+            },
+            "test_data_info": {
+                "total_test_samples": len(y_scores),
+                "test_positives": int(np.sum(y_true)),
+                "test_negatives": int(len(y_true) - np.sum(y_true))
+            },
+            "ranking_metrics": {
+                "precision_at_k": precision_at_k,
+                "recall_at_k": recall_at_k,
+                "hits_at_k": hits_at_k
+            }
+        }
+        all_provenance.append(model_provenance)
+    
+    # Create comparative plots
+    print(f"\nCreating comparative plots...")
+    plot_ranking_metrics(all_metrics_data, version_dir)
+    create_precision_recall_curve(all_pr_data, version_dir)
+    
+    # Record end time
+    end_time = datetime.now()
+    duration = (end_time - start_time).total_seconds()
+    
+    # Create comprehensive provenance metadata for the entire evaluation
+    multi_model_provenance = {
+        "timestamp": start_time.isoformat(),
+        "duration_seconds": duration,
+        "script": "evaluate_model.py",
+        "evaluation_type": "multi_model_comparison",
+        "version": f"evaluation_{version}",
+        "num_models": len(model_configs),
+        "model_labels": [config['label'] for config in model_configs],
+        "individual_model_provenance": all_provenance,
+        "description": f"Multi-model evaluation version {version} comparing {len(model_configs)} models"
+    }
+    
+    # Save provenance file
+    provenance_file = os.path.join(version_dir, "provenance.json")
+    with open(provenance_file, 'w') as f:
+        json.dump(multi_model_provenance, f, indent=2)
+    
+    # Save comparative results
+    comparative_results = {
+        'evaluation_type': 'multi_model_comparison',
+        'models': all_results,
+        'model_count': len(model_configs),
+        'duration_seconds': duration
+    }
+    
+    results_file = os.path.join(version_dir, "comparative_results.json")
+    with open(results_file, 'w') as f:
+        json.dump(comparative_results, f, indent=2)
+    
+    print(f"Provenance saved: {provenance_file}")
+    print(f"Comparative results saved: {results_file}")
+    print(f"Duration: {duration:.2f} seconds")
+    
+    # Print comparative summary
+    print("\n=== Multi-Model Test Set Ranking Metrics Comparison ===")
+    print(f"{'Model':<20} {'P@10':<8} {'R@10':<8} {'H@10':<8} {'P@50':<8} {'R@50':<8} {'H@50':<8}")
+    print("-" * 80)
+    
+    for label, results in all_results.items():
+        p10 = results['precision_at_k'].get(10, np.nan)
+        r10 = results['recall_at_k'].get(10, np.nan)
+        h10 = results['hits_at_k'].get(10, np.nan)
+        p50 = results['precision_at_k'].get(50, np.nan)
+        r50 = results['recall_at_k'].get(50, np.nan)
+        h50 = results['hits_at_k'].get(50, np.nan)
+        
+        print(f"{label:<20} {p10:<8.4f} {r10:<8.4f} {h10:<8.4f} {p50:<8.4f} {r50:<8.4f} {h50:<8.4f}")
+    
+    print(f"\nMulti-model evaluation complete!")
+    print(f"Output directory: {version_dir}")
+    
+    return version_dir
+
+
 def main():
     """Command line interface."""
     parser = argparse.ArgumentParser(description="Evaluate models with versioning and provenance")
-    parser.add_argument("--model-path", required=True,
+    
+    # Single model evaluation (backward compatibility)
+    parser.add_argument("--model-path",
                        help="Path to specific model file (e.g., graphs/robokop_base/CCDD/models/model_2/rf_model.pkl)")
-    parser.add_argument("--graph-dir", required=True,
+    parser.add_argument("--graph-dir",
                        help="Path to graph directory (e.g., graphs/robokop_base/CCDD)")
-    parser.add_argument("--ground-truth", required=True,
-                       help="Path to ground truth CSV file")
     parser.add_argument("--model-version",
                        help="Specific model version (e.g., model_2)")
     parser.add_argument("--embeddings-version", 
                        help="Specific embeddings version to use (e.g., embeddings_2)")
     
+    # Multi-model evaluation
+    parser.add_argument("--multi-model-config", 
+                       help="JSON file containing multiple model configurations")
+    parser.add_argument("--model-paths", nargs="+",
+                       help="Multiple model paths for comparison")
+    parser.add_argument("--model-labels", nargs="+",
+                       help="Labels for the models (when using --model-paths)")
+    parser.add_argument("--graph-dirs", nargs="+",
+                       help="Graph directories for each model (when using --model-paths)")
+    
+    # Common arguments
+    parser.add_argument("--ground-truth", required=True,
+                       help="Path to ground truth CSV file")
+    
     args = parser.parse_args()
     
-    version_dir = evaluate_model_with_provenance(
-        model_path=args.model_path,
-        graph_dir=args.graph_dir,
-        ground_truth_file=args.ground_truth,
-        model_version=args.model_version,
-        embeddings_version=args.embeddings_version
-    )
+    # Multi-model evaluation via config file
+    if args.multi_model_config:
+        with open(args.multi_model_config, 'r') as f:
+            model_configs = json.load(f)
+        
+        version_dir = evaluate_multiple_models_with_provenance(
+            model_configs=model_configs,
+            ground_truth_file=args.ground_truth
+        )
+    
+    # Multi-model evaluation via command line args
+    elif args.model_paths:
+        if not args.model_labels or len(args.model_labels) != len(args.model_paths):
+            raise ValueError("Must provide same number of model labels as model paths")
+        if not args.graph_dirs or len(args.graph_dirs) != len(args.model_paths):
+            raise ValueError("Must provide same number of graph directories as model paths")
+        
+        model_configs = []
+        for i, model_path in enumerate(args.model_paths):
+            model_configs.append({
+                'model_path': model_path,
+                'graph_dir': args.graph_dirs[i],
+                'label': args.model_labels[i]
+            })
+        
+        version_dir = evaluate_multiple_models_with_provenance(
+            model_configs=model_configs,
+            ground_truth_file=args.ground_truth
+        )
+    
+    # Single model evaluation (backward compatibility)
+    elif args.model_path and args.graph_dir:
+        version_dir = evaluate_model_with_provenance(
+            model_path=args.model_path,
+            graph_dir=args.graph_dir,
+            ground_truth_file=args.ground_truth,
+            model_version=args.model_version,
+            embeddings_version=args.embeddings_version
+        )
+    
+    else:
+        parser.error("Must provide either --model-path and --graph-dir for single model, "
+                    "or --multi-model-config for config file, "
+                    "or --model-paths, --model-labels, and --graph-dirs for multi-model evaluation")
     
     print(f"\nModel evaluation complete!")
     print(f"Output directory: {version_dir}")

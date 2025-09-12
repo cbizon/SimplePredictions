@@ -24,13 +24,29 @@ We are going to have codes that take the input graphs, modify them in some way t
 
 ## Input
 
-The input data may never be changed.  There are a nodes file and an edges file, both in the input_graphs directory. An example node looks like this:
+The input data may never be changed. We have multiple input graph datasets in the input_graphs directory:
+
+### Input Graph Datasets
+
+**robokop_base_nonredundant/** (DEFAULT):
+- `nodes.jsonl` (1.6GB) - Deduplicated nodes
+- `edges.jsonl` (10GB) - Deduplicated edges  
+
+**robokop_base/**:
+- `robokop_base_nodes.jsonl` (1.6GB) - All nodes
+- `robokop_base_edges.jsonl` (23GB) - All edges
+
+An example node looks like this:
+```json
 {"id":"PUBCHEM.COMPOUND:3009304","name":"1H-1,3-Diazepine-1,3(2H)-dihexanoic acid, tetrahydro-5,6-dihydroxy-2-oxo-4,7-bis(phenylmethyl)-, (4R,5S,6S,7R)-","category":["biolink:SmallMolecule","biolink:MolecularEntity","biolink:ChemicalEntity","biolink:PhysicalEssence","biolink:ChemicalOrDrugOrTreatment","biolink:ChemicalEntityOrGeneOrGeneProduct","biolink:ChemicalEntityOrProteinOrPolypeptide","biolink:NamedThing","biolink:PhysicalEssenceOrOccurrent"],"equivalent_identifiers":["PUBCHEM.COMPOUND:3009304","CHEMBL.COMPOUND:CHEMBL29089","CAS:152928-75-1","INCHIKEY:XGEGDSLAQZJGCW-HHGOQMMWSA-N"]}
+```
 
 Note the identifier, which is the unambiguous id for the node.  Also note the node categories.  Nodes have multiple categories, which are hierarchical to a description.
 
 An example edge looks like this:
-"subject":"NCBITaxon:1661386","predicate":"biolink:subclass_of","object":"NCBITaxon:286","primary_knowledge_source":"infores:ubergraph","knowledge_level":"knowledge_assertion","agent_type":"manual_agent","original_subject":"NCBITaxon:1661386","original_object":"NCBITaxon:286"}
+```json
+{"subject":"NCBITaxon:1661386","predicate":"biolink:subclass_of","object":"NCBITaxon:286","primary_knowledge_source":"infores:ubergraph","knowledge_level":"knowledge_assertion","agent_type":"manual_agent","original_subject":"NCBITaxon:1661386","original_object":"NCBITaxon:286"}
+```
 
 Note the subject/object/predicate structure. The subject and object are defined with identifiers that are in the nodes file.  If we want to e.g. filter edges where the subject and object have particular node types, we will need to use both files.
 
