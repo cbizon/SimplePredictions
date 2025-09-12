@@ -47,7 +47,7 @@ pip install pecanpy jsonlines
 
 3. **Evaluate Model** (optional, automatic in training):
    ```bash
-   python src/modeling/evaluate_predictions.py \
+   python src/modeling/evaluate_model.py \
      --graph-dir graphs/CCDD \
      --ground-truth "ground_truth/Indications List.csv"
    ```
@@ -56,6 +56,12 @@ pip install pecanpy jsonlines
 
 ```
 ├── input_graphs/              # Original biomedical knowledge graph data
+│   ├── robokop_base/          # Full dataset (23GB edges, 1.6GB nodes)
+│   │   ├── robokop_base_edges.jsonl
+│   │   └── robokop_base_nodes.jsonl
+│   └── robokop_base_nonredundant/  # Deduplicated dataset (10GB edges, 1.6GB nodes) [DEFAULT]
+│       ├── edges.jsonl
+│       └── nodes.jsonl
 ├── ground_truth/              # Known drug-disease relationships
 │   └── Indications List.csv   # FDA/EMA approved indications
 ├── graphs/                    # Processed graph data
@@ -71,12 +77,34 @@ pip install pecanpy jsonlines
 └── tests/                     # Unit tests
 ```
 
+### Input Datasets
+
+The system supports multiple input graph datasets:
+
+- **robokop_base_nonredundant** (Default): Smaller, deduplicated version with reduced redundancy
+- **robokop_base**: Full original dataset with all edges and relationships
+
+You can specify different datasets using command line arguments.
+
 ## How It Works
 
 ### 1. Graph Processing
 - **Input**: Biomedical knowledge graph with nodes (drugs, diseases, genes) and edges (relationships)
 - **Filtering**: Creates CCDD graph containing only Chemical-Chemical and Disease-Disease edges
 - **Data Leakage Prevention**: Removes direct Drug-Disease edges to avoid training on target relationships
+
+**Command Line Usage:**
+```bash
+# Using default nonredundant dataset
+python src/graph_modification/create_robokop_input.py --style CCDD
+
+# Using original full dataset  
+python src/graph_modification/create_robokop_input.py \
+  --style CCDD \
+  --input-dir input_graphs/robokop_base \
+  --nodes-filename robokop_base_nodes.jsonl \
+  --edges-filename robokop_base_edges.jsonl
+```
 
 ### 2. Embedding Generation
 - Uses node2vec via PecanPy to generate 512-dimensional node embeddings
@@ -103,8 +131,8 @@ Recent CCDD model performance on test set:
 
 ### Core Scripts
 - `src/graph_modification/create_robokop_input.py`: Graph filtering with data leakage prevention
-- `src/modeling/train_rf_model.py`: Random Forest training with balanced sampling
-- `src/modeling/evaluate_predictions.py`: Comprehensive evaluation with ranking metrics
+- `src/modeling/train_model.py`: Random Forest training with balanced sampling and provenance
+- `src/modeling/evaluate_model.py`: Comprehensive evaluation with ranking metrics and provenance
 
 ### Automation Scripts
 - `scripts/run_ccdd_analysis.sh`: End-to-end graph processing and embedding generation
