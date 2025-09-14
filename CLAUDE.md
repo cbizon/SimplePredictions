@@ -59,14 +59,18 @@ Note the subject/object/predicate structure. The subject and object are defined 
 /graphs/{graphname}: individual modified graphs
 /graphs/{graphname}/graph: node and edge files
 /graphs/{graphname}/embeddings: node embedding files
+/graphs/{graphname}/embeddings/{embeddings_subdirectories}: node embedding files
 /graphs/{graphname}/models: models and results
-/graphs  ...
+/graphs/{graphname}/models/{models subdirectories}: models and results
+/evaluations/{evaluations subdirectories}
 /src
 /src/graph_modification: code for modifying input_graphs to create analysis graphs
 /src/embedding: codes for creating n2v embeddings from the analysis graphs
 /src/modeling: codes for running RF or other models from the embeddings
 /tests: pytests for checking the code.
 /scripts: scripts for controlling the process
+
+Note the subdirectories for embeddings and models and evaluations.  These are directories related to each run of something. So for instance in embeddings, there might be embeddings\_0 holding the embeddings for the first embeddings calculated for that graph.  Those subdirectories also contain provenance files explaining where they came from.
 
 ## Analysis
 
@@ -126,3 +130,5 @@ Do not return made up results if an API fails.  Let it fail.
 When changing code, don't make duplicate functions - just change the function. We can always roll back changes if needed.
 
 Keep the directories clean, don't leave a bunch of junk laying around.
+
+When making commit or PR messages, do not mention authorship. Do not advertise for yourself.

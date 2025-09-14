@@ -27,6 +27,9 @@ from modeling.train_model import load_embeddings, load_ground_truth, create_feat
 from sklearn.model_selection import train_test_split
 
 
+
+
+
 def get_next_evaluation_version(evaluations_dir):
     """Find the next available evaluation version number.
     
@@ -49,6 +52,86 @@ def get_next_evaluation_version(evaluations_dir):
                 continue
     
     return max(existing_versions) + 1 if existing_versions else 0
+
+
+def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio):
+    """Core evaluation logic for a single model.
+    
+    Args:
+        rf_model: Trained model
+        embeddings: Node embeddings
+        positive_pairs: Ground truth positive pairs
+        drug_ids: Unique drug IDs from ground truth
+        disease_ids: Unique disease IDs from ground truth  
+        negative_ratio: Negative sampling ratio used during training
+        
+    Returns:
+        dict: Evaluation results including metrics, test data info, and test pairs
+    """
+    # Generate ALL possible drug-disease combinations from ground truth
+    all_combinations = [(drug, disease) for drug in drug_ids for disease in disease_ids]
+    
+    # Recreate the training data to identify what was seen during training
+    pos_features_train, pos_labels_train = create_feature_vectors(embeddings, positive_pairs)
+    pos_targets_train = np.ones(len(pos_features_train))
+    negative_pairs_train = generate_negative_samples(positive_pairs, drug_ids, disease_ids, negative_ratio)
+    neg_features_train, neg_labels_train = create_feature_vectors(embeddings, negative_pairs_train)
+    neg_targets_train = np.zeros(len(neg_features_train))
+    
+    X_train_full = np.vstack([pos_features_train, neg_features_train])
+    y_train_full = np.hstack([pos_targets_train, neg_targets_train])
+    pair_labels_full = pos_labels_train + neg_labels_train
+    
+    # Get training/test split using the same split as during training
+    X_train, X_test_unused, y_train, y_test_unused, indices_train, indices_test = train_test_split(
+        X_train_full, y_train_full, range(len(pair_labels_full)), test_size=0.2, random_state=42, stratify=y_train_full
+    )
+    training_pairs = set([pair_labels_full[i] for i in indices_train])
+    test_pairs_from_split = set([pair_labels_full[i] for i in indices_test])
+    
+    # Remove only training pairs from evaluation, but include test pairs + unseen combinations
+    evaluation_combinations = [pair for pair in all_combinations if pair not in training_pairs]
+    
+    # Make sure we include the test split pairs (they should already be included but let's be explicit)
+    evaluation_combinations_set = set(evaluation_combinations)
+    missing_test_pairs = test_pairs_from_split - evaluation_combinations_set
+    if missing_test_pairs:
+        evaluation_combinations.extend(list(missing_test_pairs))
+    
+    # Create features for evaluation combinations
+    eval_features, eval_pairs = create_feature_vectors(embeddings, evaluation_combinations)
+    
+    # Label evaluation combinations (known positives = 1, rest = 0)
+    y_true = np.array([1 if pair in positive_pairs else 0 for pair in eval_pairs])
+    
+    # Generate predictions for ALL evaluation combinations  
+    y_scores = rf_model.predict_proba(eval_features)[:, 1]  # Probability of positive class
+    
+    # Define K values to evaluate
+    k_values = [1, 5, 10, 20, 50, 100, 200, 500, 1000]
+    k_values = [k for k in k_values if k <= len(y_scores)]  # Only valid K values
+    
+    # Calculate ranking metrics (global precision/recall, per-disease hits)
+    precision_at_k = calculate_precision_at_k(y_true, y_scores, k_values)
+    recall_at_k = calculate_recall_at_k(y_true, y_scores, k_values)
+    hits_at_k = calculate_hits_at_k_per_disease(eval_pairs, y_true, y_scores, k_values)
+    
+    return {
+        'precision_at_k': precision_at_k,
+        'recall_at_k': recall_at_k,
+        'hits_at_k': hits_at_k,
+        'k_values': k_values,
+        'evaluation_combinations': len(evaluation_combinations),
+        'evaluation_positives': int(np.sum(y_true)),
+        'evaluation_negatives': int(len(y_true) - np.sum(y_true)),
+        'training_pairs_excluded': len(training_pairs),
+        'test_pairs_from_split': len(test_pairs_from_split),
+        'missing_test_pairs': len(missing_test_pairs),
+        'all_combinations': len(all_combinations),
+        'y_true': y_true,
+        'y_scores': y_scores,
+        'test_pairs': eval_pairs
+    }
 
 
 def get_model_info(model_file):
@@ -82,8 +165,60 @@ def get_model_info(model_file):
     return model_info
 
 
+
+
+def calculate_hits_at_k_per_disease(test_pairs, y_true, y_scores, k_values):
+    """Calculate Hits@K as fraction of diseases with at least one hit in top K.
+    
+    Args:
+        test_pairs: List of (drug_id, disease_id) tuples
+        y_true: Array of true labels
+        y_scores: Array of predicted scores
+        k_values: List of K values to evaluate
+        
+    Returns:
+        dict: Hits@K values (fraction of diseases with hits)
+    """
+    # Group predictions by disease
+    disease_groups = {}
+    for i, (drug_id, disease_id) in enumerate(test_pairs):
+        if disease_id not in disease_groups:
+            disease_groups[disease_id] = {'indices': [], 'drug_ids': []}
+        disease_groups[disease_id]['indices'].append(i)
+        disease_groups[disease_id]['drug_ids'].append(drug_id)
+    
+    hits_at_k = {k: 0 for k in k_values}
+    total_diseases = len(disease_groups)
+    
+    for disease_id, group in disease_groups.items():
+        indices = np.array(group['indices'])
+        disease_y_true = y_true[indices]
+        disease_y_scores = y_scores[indices]
+        
+        # Sort by scores (descending)
+        sorted_indices = np.argsort(disease_y_scores)[::-1]
+        sorted_true = disease_y_true[sorted_indices]
+        
+        # Check hits@k for this disease
+        for k in k_values:
+            top_k_true = sorted_true[:k]
+            if np.sum(top_k_true) > 0:  # At least one hit
+                hits_at_k[k] += 1
+    
+    # Convert to fraction
+    fraction_hits_at_k = {}
+    for k in k_values:
+        if total_diseases > 0:
+            fraction_hits_at_k[k] = hits_at_k[k] / total_diseases
+        else:
+            fraction_hits_at_k[k] = np.nan
+    
+    return fraction_hits_at_k
+
+
+# Legacy global functions for backward compatibility
 def calculate_precision_at_k(y_true, y_scores, k_values):
-    """Calculate Precision@K for different values of K."""
+    """Calculate Precision@K for different values of K (global ranking)."""
     sorted_indices = np.argsort(y_scores)[::-1]
     sorted_true = y_true[sorted_indices]
     
@@ -99,7 +234,7 @@ def calculate_precision_at_k(y_true, y_scores, k_values):
 
 
 def calculate_recall_at_k(y_true, y_scores, k_values):
-    """Calculate Recall@K for different values of K."""
+    """Calculate Recall@K for different values of K (global ranking)."""
     sorted_indices = np.argsort(y_scores)[::-1]
     sorted_true = y_true[sorted_indices]
     
@@ -116,20 +251,6 @@ def calculate_recall_at_k(y_true, y_scores, k_values):
     return recall_at_k
 
 
-def calculate_hits_at_k(y_true, y_scores, k_values):
-    """Calculate Hits@K (whether at least one positive is in top K)."""
-    sorted_indices = np.argsort(y_scores)[::-1]
-    sorted_true = y_true[sorted_indices]
-    
-    hits_at_k = {}
-    for k in k_values:
-        if k <= len(sorted_true):
-            top_k_true = sorted_true[:k]
-            hits_at_k[k] = 1 if np.sum(top_k_true) > 0 else 0
-        else:
-            hits_at_k[k] = np.nan
-    
-    return hits_at_k
 
 
 def plot_ranking_metrics(metrics_data, output_dir):
@@ -144,7 +265,7 @@ def plot_ranking_metrics(metrics_data, output_dir):
     sns.set_palette("husl")
     
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle('Drug-Disease Prediction Ranking Metrics Comparison', fontsize=16)
+    fig.suptitle('Drug-Disease Prediction Ranking Metrics', fontsize=16)
     
     # Get all k values (union of all models)
     all_k_values = set()
@@ -314,8 +435,10 @@ def evaluate_model_with_provenance(model_path,
     if embeddings_version:
         embeddings_file = os.path.join(graph_dir, "embeddings", embeddings_version, "embeddings.emb")
     else:
-        # Use the default embeddings.emb file
-        embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
+        # Try embeddings_0 first, then fall back to direct embeddings.emb
+        embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings_0", "embeddings.emb")
+        if not os.path.exists(embeddings_file):
+            embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
     
     if not os.path.exists(embeddings_file):
         raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
@@ -325,54 +448,37 @@ def evaluate_model_with_provenance(model_path,
     positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
     drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
     
-    # Need to determine negative_ratio from model provenance
+    # Need to determine negative_ratio from model provenance to recreate training set
     negative_ratio = 1  # default
     if "model_provenance" in model_info and "model_parameters" in model_info["model_provenance"]:
         negative_ratio = model_info["model_provenance"]["model_parameters"].get("negative_ratio", 1)
     
     print(f"Using negative_ratio={negative_ratio} from model provenance")
-    print(f"Recreating train-test split to get test set only...")
+    print(f"Creating comprehensive evaluation on all drug-disease combinations...")
+    print(f"Using {len(drug_ids)} drugs and {len(disease_ids)} diseases from ground truth")
     
-    # Recreate the EXACT same data preparation as training
-    pos_features, pos_labels = create_feature_vectors(embeddings, positive_pairs)
-    pos_targets = np.ones(len(pos_features))
+    # Use shared evaluation logic
+    eval_results = evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio)
     
-    # Generate same negative samples (with same random seed)
-    negative_pairs = generate_negative_samples(positive_pairs, drug_ids, disease_ids, negative_ratio)
-    neg_features, neg_labels = create_feature_vectors(embeddings, negative_pairs)
-    neg_targets = np.zeros(len(neg_features))
+    print(f"Generated {eval_results['all_combinations']:,} total drug-disease combinations")
+    print(f"Training pairs to exclude: {eval_results['training_pairs_excluded']:,}")
+    print(f"Test pairs from 20% split: {eval_results['test_pairs_from_split']:,}")
+    if eval_results['missing_test_pairs'] > 0:
+        print(f"Added {eval_results['missing_test_pairs']} missing test pairs to evaluation")
+    print(f"Evaluating on {eval_results['evaluation_combinations']:,} combinations (includes 20% test split + unseen combinations)")
+    print(f"Evaluation set: {eval_results['evaluation_combinations']:,} combinations ({eval_results['evaluation_positives']:,} known positives)")
+    print(f"Test predictions: {len(eval_results['y_scores'])}")
+    print(f"Test positives: {eval_results['evaluation_positives']}")
+    print(f"Test negatives: {eval_results['evaluation_negatives']}")
     
-    # Combine positive and negative samples (same as training)
-    X = np.vstack([pos_features, neg_features])
-    y = np.hstack([pos_targets, neg_targets])
-    pair_labels = pos_labels + neg_labels
-    
-    # Recreate the EXACT same train-test split (same random seed)
-    X_train, X_test, y_train, y_test, indices_train, indices_test = train_test_split(
-        X, y, range(len(pair_labels)), test_size=0.2, random_state=42, stratify=y
-    )
-    
-    # Get test set pairs and labels
-    test_pairs = [pair_labels[i] for i in indices_test]
-    
-    print(f"Test set: {len(X_test)} samples ({np.sum(y_test)} positive, {len(y_test) - np.sum(y_test)} negative)")
-    
-    # Generate predictions ONLY for test set
-    y_scores = rf_model.predict_proba(X_test)[:, 1]  # Probability of positive class
-    y_true = y_test
-    
-    print(f"Test predictions: {len(y_scores)}")
-    print(f"Test positives: {np.sum(y_true)}")
-    print(f"Test negatives: {len(y_true) - np.sum(y_true)}")
-    
-    # Define K values to evaluate
-    k_values = [1, 5, 10, 20, 50, 100, 200, 500, 1000]
-    k_values = [k for k in k_values if k <= len(y_scores)]  # Only valid K values
-    
-    # Calculate ranking metrics
-    precision_at_k = calculate_precision_at_k(y_true, y_scores, k_values)
-    recall_at_k = calculate_recall_at_k(y_true, y_scores, k_values)
-    hits_at_k = calculate_hits_at_k(y_true, y_scores, k_values)
+    # Extract results from shared function
+    precision_at_k = eval_results['precision_at_k']
+    recall_at_k = eval_results['recall_at_k']
+    hits_at_k = eval_results['hits_at_k']
+    k_values = eval_results['k_values']
+    y_true = eval_results['y_true']
+    y_scores = eval_results['y_scores']
+    test_pairs = eval_results['test_pairs']
     
     # Create plots for single model
     single_model_metrics = {
@@ -417,10 +523,13 @@ def evaluate_model_with_provenance(model_path,
             "random_state": 42
         },
         "test_data_info": {
-            "total_test_samples": len(y_scores),
-            "test_positives": int(np.sum(y_true)),
-            "test_negatives": int(len(y_true) - np.sum(y_true)),
-            "test_pairs_count": len(test_pairs)
+            "total_evaluation_combinations": eval_results['all_combinations'],
+            "training_pairs_excluded": eval_results['training_pairs_excluded'], 
+            "evaluation_combinations": eval_results['evaluation_combinations'],
+            "evaluation_positives": eval_results['evaluation_positives'],
+            "evaluation_negatives": eval_results['evaluation_negatives'],
+            "total_drugs": len(drug_ids),
+            "total_diseases": len(disease_ids)
         },
         "ranking_metrics": {
             "precision_at_k": precision_at_k,
@@ -441,9 +550,13 @@ def evaluate_model_with_provenance(model_path,
         'recall_at_k': recall_at_k,
         'hits_at_k': hits_at_k,
         'k_values': k_values,
-        'total_test_predictions': len(y_scores),
-        'test_positives': int(np.sum(y_true)),
-        'test_negatives': int(len(y_true) - np.sum(y_true)),
+        'total_evaluation_combinations': eval_results['all_combinations'],
+        'training_pairs_excluded': eval_results['training_pairs_excluded'],
+        'evaluation_combinations': eval_results['evaluation_combinations'], 
+        'evaluation_positives': eval_results['evaluation_positives'],
+        'evaluation_negatives': eval_results['evaluation_negatives'],
+        'total_drugs': len(drug_ids),
+        'total_diseases': len(disease_ids),
         'negative_ratio_used': negative_ratio
     }
     
@@ -536,11 +649,14 @@ def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
         with open(model_path, 'rb') as f:
             rf_model = pickle.load(f)
         
-        # Determine embeddings file
+        # Determine embeddings file - default to embeddings_0 if not specified
         if embeddings_version:
             embeddings_file = os.path.join(graph_dir, "embeddings", embeddings_version, "embeddings.emb")
         else:
-            embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
+            # Try embeddings_0 first, then fall back to direct embeddings.emb
+            embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings_0", "embeddings.emb")
+            if not os.path.exists(embeddings_file):
+                embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
         
         if not os.path.exists(embeddings_file):
             raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
@@ -556,40 +672,27 @@ def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
             negative_ratio = model_info["model_provenance"]["model_parameters"].get("negative_ratio", 1)
         
         print(f"  Using negative_ratio={negative_ratio} from model provenance")
+        print(f"  Using {len(drug_ids)} drugs and {len(disease_ids)} diseases from ground truth")
         
-        # Recreate the EXACT same data preparation as training
-        pos_features, pos_labels = create_feature_vectors(embeddings, positive_pairs)
-        pos_targets = np.ones(len(pos_features))
+        # Use shared evaluation logic
+        eval_results = evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio)
         
-        # Generate same negative samples (with same random seed)
-        negative_pairs = generate_negative_samples(positive_pairs, drug_ids, disease_ids, negative_ratio)
-        neg_features, neg_labels = create_feature_vectors(embeddings, negative_pairs)
-        neg_targets = np.zeros(len(neg_features))
+        print(f"  Total possible combinations: {eval_results['all_combinations']:,}")
+        print(f"  Training pairs to exclude: {eval_results['training_pairs_excluded']:,}")
+        print(f"  Test pairs from 20% split: {eval_results['test_pairs_from_split']:,}")
+        if eval_results['missing_test_pairs'] > 0:
+            print(f"  Added {eval_results['missing_test_pairs']} missing test pairs to evaluation")
+        print(f"  Evaluating on {eval_results['evaluation_combinations']:,} combinations (includes 20% test split + unseen combinations)")
+        print(f"  Test predictions: {len(eval_results['y_scores'])} ({eval_results['evaluation_positives']} positive, {eval_results['evaluation_negatives']} negative)")
         
-        # Combine positive and negative samples
-        X = np.vstack([pos_features, neg_features])
-        y = np.hstack([pos_targets, neg_targets])
-        pair_labels = pos_labels + neg_labels
-        
-        # Recreate the EXACT same train-test split
-        X_train, X_test, y_train, y_test, indices_train, indices_test = train_test_split(
-            X, y, range(len(pair_labels)), test_size=0.2, random_state=42, stratify=y
-        )
-        
-        # Generate predictions ONLY for test set
-        y_scores = rf_model.predict_proba(X_test)[:, 1]
-        y_true = y_test
-        
-        print(f"  Test predictions: {len(y_scores)} ({np.sum(y_true)} positive, {len(y_true) - np.sum(y_true)} negative)")
-        
-        # Define K values to evaluate
-        k_values = [1, 5, 10, 20, 50, 100, 200, 500, 1000]
-        k_values = [k for k in k_values if k <= len(y_scores)]
-        
-        # Calculate ranking metrics
-        precision_at_k = calculate_precision_at_k(y_true, y_scores, k_values)
-        recall_at_k = calculate_recall_at_k(y_true, y_scores, k_values)
-        hits_at_k = calculate_hits_at_k(y_true, y_scores, k_values)
+        # Extract results from shared function
+        precision_at_k = eval_results['precision_at_k']
+        recall_at_k = eval_results['recall_at_k']
+        hits_at_k = eval_results['hits_at_k']
+        k_values = eval_results['k_values']
+        y_true = eval_results['y_true']
+        y_scores = eval_results['y_scores']
+        test_pairs = eval_results['test_pairs']
         
         # Store results for this model
         all_results[label] = {
@@ -597,10 +700,13 @@ def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
             'recall_at_k': recall_at_k,
             'hits_at_k': hits_at_k,
             'k_values': k_values,
-            'total_test_predictions': len(y_scores),
-            'test_positives': int(np.sum(y_true)),
-            'test_negatives': int(len(y_true) - np.sum(y_true)),
-            'negative_ratio_used': negative_ratio
+            'total_evaluation_combinations': eval_results['evaluation_combinations'],
+            'evaluation_positives': eval_results['evaluation_positives'],
+            'evaluation_negatives': eval_results['evaluation_negatives'],
+            'negative_ratio_used': negative_ratio,
+            'total_drugs': len(drug_ids),
+            'total_diseases': len(disease_ids),
+            'training_pairs_excluded': eval_results['training_pairs_excluded']
         }
         
         # Store data for plots
@@ -629,13 +735,17 @@ def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
             "evaluation_parameters": {
                 "k_values": k_values,
                 "negative_ratio_used": negative_ratio,
-                "test_size": 0.2,
-                "random_state": 42
+                "evaluation_scope": "comprehensive_drug_disease_combinations",
+                "training_pairs_excluded": True,
+                "total_drugs": len(drug_ids),
+                "total_diseases": len(disease_ids),
+                "total_possible_combinations": eval_results['all_combinations'],
+                "training_pairs_excluded_count": eval_results['training_pairs_excluded']
             },
             "test_data_info": {
-                "total_test_samples": len(y_scores),
-                "test_positives": int(np.sum(y_true)),
-                "test_negatives": int(len(y_true) - np.sum(y_true))
+                "total_evaluation_combinations": eval_results['evaluation_combinations'],
+                "evaluation_positives": eval_results['evaluation_positives'],
+                "evaluation_negatives": eval_results['evaluation_negatives']
             },
             "ranking_metrics": {
                 "precision_at_k": precision_at_k,
