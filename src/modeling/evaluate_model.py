@@ -121,10 +121,9 @@ def calculate_hits_at_k_per_disease(test_pairs, y_true, y_scores, k_values):
         
         # Check hits@k for this disease
         for k in k_values:
-            if k <= len(sorted_true) and k > 0:
-                top_k_true = sorted_true[:k]
-                if np.sum(top_k_true) > 0:  # At least one hit
-                    hits_at_k[k] += 1
+            top_k_true = sorted_true[:k]
+            if np.sum(top_k_true) > 0:  # At least one hit
+                hits_at_k[k] += 1
     
     # Convert to fraction
     fraction_hits_at_k = {}
