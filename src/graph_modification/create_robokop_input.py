@@ -161,7 +161,7 @@ def create_robokop_input(input_base_dir,
         raise FileNotFoundError(f"Nodes file not found: {node_file}")
     if not os.path.exists(edges_file):
         raise FileNotFoundError(f"Edges file not found: {edges_file}")
-    outdir = f"{output_dir}/{style}"
+    outdir = f"{output_dir}/{os.path.basename(input_base_dir)}_{style}"
     graph_dir = f"{outdir}/graph"
     if style == "original":
         # This filters the edges by
@@ -300,7 +300,7 @@ def main():
         output_dir=args.output_dir
     )
     
-    print(f"Graph '{args.style}' created in {args.output_dir}/{args.style}/")
+    print(f"Graph '{args.style}' created in {args.output_dir}/{os.path.basename(args.input_dir)}/{args.style}/")
 
 
 if __name__ == "__main__":

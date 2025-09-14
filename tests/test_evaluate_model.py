@@ -11,7 +11,7 @@ from pathlib import Path
 
 from src.modeling.evaluate_model import (
     get_next_evaluation_version, get_model_info, calculate_precision_at_k,
-    calculate_recall_at_k, calculate_hits_at_k, plot_ranking_metrics,
+    calculate_recall_at_k, calculate_hits_at_k_per_disease, plot_ranking_metrics,
     create_precision_recall_curve
 )
 
@@ -377,4 +377,118 @@ def test_ranking_metrics_consistency():
     for i in range(len(k_values) - 1):
         k1, k2 = k_values[i], k_values[i + 1]
         assert recall_at_k[k1] <= recall_at_k[k2] + 1e-10  # Allow small numerical errors
-        # Hits@K doesn't have monotonicity since it's binary
+        # Hits@K doesn't have monotonicity since it's binary# Tests for per-disease metrics
+
+def test_calculate_precision_at_k_per_disease():
+    """Test per-disease precision@K calculation."""
+    # Test data: 2 diseases, each with 2 drug predictions
+    test_pairs = [
+        ('drug1', 'disease1'),  # True positive
+        ('drug2', 'disease1'),  # False positive
+        ('drug3', 'disease2'),  # False positive  
+        ('drug4', 'disease2'),  # True positive
+    ]
+    y_true = np.array([1, 0, 0, 1])  # True labels
+    y_scores = np.array([0.9, 0.3, 0.2, 0.8])  # Predictions
+    k_values = [1, 2]
+    
+    precision_at_k = calculate_precision_at_k_per_disease(test_pairs, y_true, y_scores, k_values)
+    
+    # For disease1: drug1 (0.9, True), drug2 (0.3, False)
+    # P@1 for disease1 = 1.0, P@2 for disease1 = 0.5
+    # For disease2: drug4 (0.8, True), drug3 (0.2, False) 
+    # P@1 for disease2 = 1.0, P@2 for disease2 = 0.5
+    # Average: P@1 = 1.0, P@2 = 0.5
+    assert abs(precision_at_k[1] - 1.0) < 1e-10
+    assert abs(precision_at_k[2] - 0.5) < 1e-10
+
+
+def test_calculate_recall_at_k_per_disease():
+    """Test per-disease recall@K calculation."""
+    # Test data: disease1 has 2 true positives, disease2 has 1 true positive
+    test_pairs = [
+        ('drug1', 'disease1'),  # True positive
+        ('drug2', 'disease1'),  # True positive  
+        ('drug3', 'disease1'),  # False positive
+        ('drug4', 'disease2'),  # True positive
+        ('drug5', 'disease2'),  # False positive
+    ]
+    y_true = np.array([1, 1, 0, 1, 0])
+    y_scores = np.array([0.9, 0.8, 0.3, 0.7, 0.2])
+    k_values = [1, 2]
+    
+    recall_at_k = calculate_recall_at_k_per_disease(test_pairs, y_true, y_scores, k_values)
+    
+    # For disease1: 2 true positives total
+    # R@1: gets drug1 (true) = 1/2 = 0.5
+    # R@2: gets drug1, drug2 (both true) = 2/2 = 1.0
+    # For disease2: 1 true positive total  
+    # R@1: gets drug4 (true) = 1/1 = 1.0
+    # R@2: gets drug4 (true), drug5 (false) = 1/1 = 1.0
+    # Average: R@1 = (0.5 + 1.0)/2 = 0.75, R@2 = (1.0 + 1.0)/2 = 1.0
+    assert abs(recall_at_k[1] - 0.75) < 1e-10
+    assert abs(recall_at_k[2] - 1.0) < 1e-10
+
+
+def test_calculate_hits_at_k_per_disease():
+    """Test per-disease hits@K calculation."""
+    # Test data: disease1 has hits, disease2 has no hits at K=1
+    test_pairs = [
+        ('drug1', 'disease1'),  # True positive (high score)
+        ('drug2', 'disease1'),  # False positive
+        ('drug3', 'disease2'),  # False positive (high score)
+        ('drug4', 'disease2'),  # True positive (low score)
+    ]
+    y_true = np.array([1, 0, 0, 1])
+    y_scores = np.array([0.9, 0.3, 0.8, 0.2])  # disease2 true positive ranked last
+    k_values = [1, 2]
+    
+    hits_at_k = calculate_hits_at_k_per_disease(test_pairs, y_true, y_scores, k_values)
+    
+    # H@1: disease1 gets hit (drug1), disease2 gets no hit (drug3)
+    # Fraction with hits = 1/2 = 0.5
+    # H@2: disease1 gets hit, disease2 gets hit (drug4 in top 2)  
+    # Fraction with hits = 2/2 = 1.0
+    assert abs(hits_at_k[1] - 0.5) < 1e-10
+    assert abs(hits_at_k[2] - 1.0) < 1e-10
+
+
+def test_per_disease_single_disease():
+    """Test per-disease metrics with single disease."""
+    test_pairs = [('drug1', 'disease1'), ('drug2', 'disease1')]
+    y_true = np.array([1, 0])
+    y_scores = np.array([0.8, 0.2])
+    k_values = [1]
+    
+    precision_at_k = calculate_precision_at_k_per_disease(test_pairs, y_true, y_scores, k_values)
+    recall_at_k = calculate_recall_at_k_per_disease(test_pairs, y_true, y_scores, k_values)
+    hits_at_k = calculate_hits_at_k_per_disease(test_pairs, y_true, y_scores, k_values)
+    
+    # Single disease: P@1=1.0, R@1=1.0, H@1=1.0
+    assert precision_at_k[1] == 1.0
+    assert recall_at_k[1] == 1.0  
+    assert hits_at_k[1] == 1.0
+
+
+def test_per_disease_no_positives():
+    """Test per-disease metrics when a disease has no positives."""
+    test_pairs = [
+        ('drug1', 'disease1'),  # True positive
+        ('drug2', 'disease2'),  # False positive (no true positives for disease2)
+    ]
+    y_true = np.array([1, 0])
+    y_scores = np.array([0.8, 0.2])
+    k_values = [1]
+    
+    precision_at_k = calculate_precision_at_k_per_disease(test_pairs, y_true, y_scores, k_values)
+    recall_at_k = calculate_recall_at_k_per_disease(test_pairs, y_true, y_scores, k_values)
+    hits_at_k = calculate_hits_at_k_per_disease(test_pairs, y_true, y_scores, k_values)
+    
+    # Only disease1 contributes to recall (disease2 skipped due to no positives)
+    # But both diseases contribute to precision and hits
+    # P@1 average: (1.0 + 0.0)/2 = 0.5
+    # R@1 average: only disease1 = 1.0  
+    # H@1 fraction: 1/2 = 0.5
+    assert precision_at_k[1] == 0.5
+    assert recall_at_k[1] == 1.0
+    assert hits_at_k[1] == 0.5
