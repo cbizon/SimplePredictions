@@ -125,6 +125,27 @@ def keep_CGGD(edge, typemap):
                 ("biolink:Gene", "biolink:DiseaseOrPhenotypicFeature")]
     return check_accepted(edge, typemap, accepted)
 
+def keep_CCDD_with_subclass(edge, typemap):
+    # return True if you want to filter this edge out  
+    # Chemical-Chemical, Disease-Disease edges AND subclass_of edges (CD filtered out by check_accepted)
+    if edge["predicate"] == "biolink:subclass_of":
+        return False  # Keep subclass edges
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted)
+
+def keep_CGD_with_subclass(edge, typemap):
+    # return True if you want to filter this edge out
+    # Keep: Chemical-Chemical, Disease-Disease, Chemical-Gene, Gene-Disease AND subclass_of edges
+    # Remove: Chemical-Disease (handled by check_accepted via has_cd_edge)
+    if edge["predicate"] == "biolink:subclass_of":
+        return False  # Keep subclass edges
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:Gene"),
+                ("biolink:Gene", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted)
+
 
 def pred_trans(edge, edge_map):
     edge_key = {"predicate": edge["predicate"]}
@@ -195,6 +216,12 @@ def create_robokop_input(input_base_dir,
         # No subclasses
         # only chemical/disease edges and disease/disease edges
         remove_edge = keep_CGGD
+    elif style == "CCDD_with_subclass":
+        # Chemical-Chemical, Disease-Disease edges AND subclass_of edges (CD filtered out)
+        remove_edge = keep_CCDD_with_subclass
+    elif style == "CGD_with_subclass":
+        # Chemical-Chemical, Disease-Disease, Chemical-Gene, Gene-Disease AND subclass_of edges (CD filtered out)
+        remove_edge = keep_CGD_with_subclass
     else:
         print("I don't know what you mean")
         return
@@ -279,7 +306,7 @@ def main():
     """Command line interface."""
     parser = argparse.ArgumentParser(description="Create filtered graph for link prediction")
     parser.add_argument("--style", default="CCDD", 
-                       choices=["original", "CGD", "CDD", "CCD", "CCDD", "CCGDD", "CGGD"],
+                       choices=["original", "CGD", "CDD", "CCD", "CCDD", "CCGDD", "CGGD", "CCDD_with_subclass", "CGD_with_subclass"],
                        help="Graph filtering style (CD removed to prevent data leakage)")
     parser.add_argument("--input-dir", default="input_graphs/robokop_base_nonredundant",
                        help="Base directory containing input graph files")
