@@ -27,6 +27,64 @@ from modeling.train_model import load_embeddings, load_ground_truth, create_feat
 from sklearn.model_selection import train_test_split
 
 
+def extract_model_metadata(model_dir):
+    """Extract metadata from a model directory.
+    
+    Args:
+        model_dir: Path to model directory (e.g., graphs/robokop_base/CCDD/models/model_2)
+        
+    Returns:
+        dict: Model metadata including paths to embeddings, ground truth, etc.
+    """
+    # Read provenance file
+    provenance_file = os.path.join(model_dir, "provenance.json")
+    if not os.path.exists(provenance_file):
+        raise FileNotFoundError(f"Provenance file not found: {provenance_file}")
+    
+    with open(provenance_file, 'r') as f:
+        provenance = json.load(f)
+    
+    # Extract key paths from provenance
+    input_data = provenance.get("input_data", {})
+    
+    # Infer graph directory from model directory path
+    # e.g., graphs/robokop_base/CCDD/models/model_2 -> graphs/robokop_base/CCDD
+    model_dir_parts = Path(model_dir).parts
+    if "models" in model_dir_parts:
+        models_index = model_dir_parts.index("models")
+        graph_dir = str(Path(*model_dir_parts[:models_index]))
+    else:
+        # Fallback: use the graph_dir from provenance if available
+        graph_dir = input_data.get("graph_dir")
+        if not graph_dir:
+            raise ValueError(f"Cannot determine graph directory from model path: {model_dir}")
+    
+    # Get model file path
+    model_file = os.path.join(model_dir, "rf_model.pkl")
+    if not os.path.exists(model_file):
+        raise FileNotFoundError(f"Model file not found: {model_file}")
+    
+    # Extract other metadata
+    metadata = {
+        "model_dir": model_dir,
+        "model_file": model_file,
+        "graph_dir": graph_dir,
+        "embeddings_file": input_data.get("embeddings_file"),
+        "embeddings_version": input_data.get("embeddings_version"),
+        "ground_truth_file": input_data.get("ground_truth", {}).get("ground_truth_file"),
+        "provenance": provenance
+    }
+    
+    # Validate critical paths exist
+    if metadata["embeddings_file"] and not os.path.exists(metadata["embeddings_file"]):
+        raise FileNotFoundError(f"Embeddings file not found: {metadata['embeddings_file']}")
+    
+    if metadata["ground_truth_file"] and not os.path.exists(metadata["ground_truth_file"]):
+        raise FileNotFoundError(f"Ground truth file not found: {metadata['ground_truth_file']}")
+    
+    return metadata
+
+
 
 
 
@@ -498,23 +556,29 @@ def create_precision_recall_curve(pr_curve_data, output_dir):
     plt.close()
 
 
-def evaluate_model_with_provenance(model_path,
-                                 graph_dir, 
-                                 ground_truth_file,
-                                 model_version=None,
-                                 embeddings_version=None):
+def evaluate_model_with_provenance(model_dir):
     """Evaluate model with automatic versioning and provenance.
     
     Args:
-        model_path: Path to specific model file (e.g., graphs/robokop_base/CCDD/models/model_2/rf_model.pkl)
-        graph_dir: Path to graph directory (e.g., graphs/robokop_base/CCDD) 
-        ground_truth_file: Path to ground truth CSV file
-        model_version: Specific model version (e.g., "model_2")
-        embeddings_version: Specific embeddings version (e.g., "embeddings_1")
+        model_dir: Path to model directory (e.g., graphs/robokop_base/CCDD/models/model_2)
         
     Returns:
         str: Path to the generated evaluation directory
     """
+    print(f"Evaluating model: {model_dir}")
+    
+    # Extract metadata from model directory
+    metadata = extract_model_metadata(model_dir)
+    
+    model_path = metadata["model_file"]
+    graph_dir = metadata["graph_dir"]
+    ground_truth_file = metadata["ground_truth_file"]
+    embeddings_version = metadata["embeddings_version"]
+    
+    print(f"Graph directory: {graph_dir}")
+    print(f"Ground truth: {ground_truth_file}")
+    print(f"Embeddings: {metadata['embeddings_file']}")
+    print(f"Negative sampling method: {metadata['provenance']['input_data'].get('negative_sampling_method', 'unknown')}")
     # Validate model file
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
@@ -707,25 +771,25 @@ def evaluate_model_with_provenance(model_path,
     return version_dir
 
 
-def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
+def evaluate_multiple_models_with_provenance(model_configs):
     """Evaluate multiple models with comparative analysis and provenance.
     
     Args:
         model_configs: List of dictionaries, each containing:
-                      - model_path: Path to model file
-                      - graph_dir: Path to graph directory  
+                      - model_dir: Path to model directory
                       - label: Human-readable label for the model
-                      - model_version: Optional model version
-                      - embeddings_version: Optional embeddings version
-        ground_truth_file: Path to ground truth CSV file
         
     Returns:
         str: Path to the generated evaluation directory
     """
-    # Validate all model files first
+    # Extract metadata for all models first
+    model_metadata = []
     for config in model_configs:
-        if not os.path.exists(config['model_path']):
-            raise FileNotFoundError(f"Model file not found: {config['model_path']}")
+        metadata = extract_model_metadata(config['model_dir'])
+        model_metadata.append({
+            'metadata': metadata,
+            'label': config['label']
+        })
     
     # Determine output directory structure
     evaluations_base_dir = "evaluations"
@@ -749,15 +813,19 @@ def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
     all_provenance = []
     
     # Evaluate each model
-    for i, config in enumerate(model_configs):
-        model_path = config['model_path']
-        graph_dir = config['graph_dir']
-        label = config['label']
-        model_version = config.get('model_version')
-        embeddings_version = config.get('embeddings_version')
+    for i, model_data in enumerate(model_metadata):
+        metadata = model_data['metadata']
+        label = model_data['label']
         
-        print(f"\nEvaluating model {i+1}/{len(model_configs)}: {label}")
+        model_path = metadata['model_file']
+        graph_dir = metadata['graph_dir']
+        ground_truth_file = metadata['ground_truth_file']
+        embeddings_version = metadata['embeddings_version']
+        
+        print(f"\nEvaluating model {i+1}/{len(model_metadata)}: {label}")
         print(f"  Model: {model_path}")
+        print(f"  Graph dir: {graph_dir}")
+        print(f"  Ground truth: {ground_truth_file}")
         
         # Get model info for provenance
         model_info = get_model_info(model_path)
@@ -944,29 +1012,17 @@ def main():
     """Command line interface."""
     parser = argparse.ArgumentParser(description="Evaluate models with versioning and provenance")
     
-    # Single model evaluation (backward compatibility)
-    parser.add_argument("--model-path",
-                       help="Path to specific model file (e.g., graphs/robokop_base/CCDD/models/model_2/rf_model.pkl)")
-    parser.add_argument("--graph-dir",
-                       help="Path to graph directory (e.g., graphs/robokop_base/CCDD)")
-    parser.add_argument("--model-version",
-                       help="Specific model version (e.g., model_2)")
-    parser.add_argument("--embeddings-version", 
-                       help="Specific embeddings version to use (e.g., embeddings_2)")
+    # Simplified single model evaluation
+    parser.add_argument("--model-dir", 
+                       help="Path to model directory (e.g., graphs/robokop_base/CCDD/models/model_2)")
     
     # Multi-model evaluation
     parser.add_argument("--multi-model-config", 
                        help="JSON file containing multiple model configurations")
-    parser.add_argument("--model-paths", nargs="+",
-                       help="Multiple model paths for comparison")
+    parser.add_argument("--model-dirs", nargs="+",
+                       help="Multiple model directories for comparison")
     parser.add_argument("--model-labels", nargs="+",
-                       help="Labels for the models (when using --model-paths)")
-    parser.add_argument("--graph-dirs", nargs="+",
-                       help="Graph directories for each model (when using --model-paths)")
-    
-    # Common arguments
-    parser.add_argument("--ground-truth", required=True,
-                       help="Path to ground truth CSV file")
+                       help="Labels for the models (when using --model-dirs)")
     
     args = parser.parse_args()
     
@@ -976,44 +1032,33 @@ def main():
             model_configs = json.load(f)
         
         version_dir = evaluate_multiple_models_with_provenance(
-            model_configs=model_configs,
-            ground_truth_file=args.ground_truth
+            model_configs=model_configs
         )
     
     # Multi-model evaluation via command line args
-    elif args.model_paths:
-        if not args.model_labels or len(args.model_labels) != len(args.model_paths):
-            raise ValueError("Must provide same number of model labels as model paths")
-        if not args.graph_dirs or len(args.graph_dirs) != len(args.model_paths):
-            raise ValueError("Must provide same number of graph directories as model paths")
+    elif args.model_dirs:
+        if not args.model_labels or len(args.model_labels) != len(args.model_dirs):
+            raise ValueError("Must provide same number of model labels as model directories")
         
         model_configs = []
-        for i, model_path in enumerate(args.model_paths):
+        for i, model_dir in enumerate(args.model_dirs):
             model_configs.append({
-                'model_path': model_path,
-                'graph_dir': args.graph_dirs[i],
+                'model_dir': model_dir,
                 'label': args.model_labels[i]
             })
         
         version_dir = evaluate_multiple_models_with_provenance(
-            model_configs=model_configs,
-            ground_truth_file=args.ground_truth
+            model_configs=model_configs
         )
     
-    # Single model evaluation (backward compatibility)
-    elif args.model_path and args.graph_dir:
-        version_dir = evaluate_model_with_provenance(
-            model_path=args.model_path,
-            graph_dir=args.graph_dir,
-            ground_truth_file=args.ground_truth,
-            model_version=args.model_version,
-            embeddings_version=args.embeddings_version
-        )
+    # Single model evaluation
+    elif args.model_dir:
+        version_dir = evaluate_model_with_provenance(args.model_dir)
     
     else:
-        parser.error("Must provide either --model-path and --graph-dir for single model, "
+        parser.error("Must provide either --model-dir for single model, "
                     "or --multi-model-config for config file, "
-                    "or --model-paths, --model-labels, and --graph-dirs for multi-model evaluation")
+                    "or --model-dirs and --model-labels for multi-model evaluation")
     
     print(f"\nModel evaluation complete!")
     print(f"Output directory: {version_dir}")

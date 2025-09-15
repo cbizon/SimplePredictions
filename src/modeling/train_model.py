@@ -204,6 +204,60 @@ def create_feature_vectors(embeddings, drug_disease_pairs, pad_missing=False):
     return np.array(features), pair_labels
 
 
+def load_contraindications(contraindications_file, embeddings=None):
+    """Load contraindications as negative Drug-Disease pairs.
+    
+    Args:
+        contraindications_file: Path to contraindications CSV file
+        embeddings: Dict of embeddings to filter against (optional)
+        
+    Returns:
+        tuple: (negative_pairs, contraindications_stats)
+    """
+    df = pd.read_csv(contraindications_file, sep=',')
+    
+    print(f"Contraindications columns: {list(df.columns)}")
+    print(f"Contraindications file shape: {df.shape}")
+    
+    # Use the specific column names from the contraindications file
+    drug_col = 'final normalized drug id'
+    disease_col = 'final normalized disease id'
+    
+    if drug_col not in df.columns or disease_col not in df.columns:
+        raise ValueError(f"Expected columns '{drug_col}' and '{disease_col}' in {contraindications_file}. "
+                        f"Available columns: {list(df.columns)}")
+    
+    print(f"Using contraindications drug column: '{drug_col}' and disease column: '{disease_col}'")
+    
+    # Remove rows with missing values
+    df_clean = df[[drug_col, disease_col]].dropna()
+    initial_count = len(df_clean)
+    
+    # Filter to only include pairs where both drug and disease have embeddings
+    if embeddings is not None:
+        print(f"Filtering contraindications to only include nodes with embeddings...")
+        df_clean = df_clean[
+            df_clean[drug_col].isin(embeddings) & 
+            df_clean[disease_col].isin(embeddings)
+        ]
+        print(f"Filtered contraindications from {initial_count} to {len(df_clean)} pairs with embeddings")
+    
+    negative_pairs = set(zip(df_clean[drug_col], df_clean[disease_col]))
+    
+    contraindications_stats = {
+        "contraindications_file": contraindications_file,
+        "total_rows": len(df),
+        "clean_rows": initial_count,
+        "final_negative_pairs": len(negative_pairs),
+        "unique_drugs": len(set(pair[0] for pair in negative_pairs)),
+        "unique_diseases": len(set(pair[1] for pair in negative_pairs))
+    }
+    
+    print(f"Final contraindication pairs: {len(negative_pairs)}")
+    
+    return negative_pairs, contraindications_stats
+
+
 def generate_negative_samples(positive_pairs, all_drug_ids, all_disease_ids, ratio=1):
     """Generate negative samples for training.
     
@@ -255,17 +309,19 @@ def train_model(graph_dir,
                                negative_ratio=1,
                                n_estimators=100,
                                max_depth=10,
-                               random_state=42):
+                               random_state=42,
+                               contraindications_file=None):
     """Train model with automatic versioning and provenance.
     
     Args:
         graph_dir: Path to graph directory (e.g., graphs/robokop_base/CCDD)
         ground_truth_file: Path to ground truth CSV file
         embeddings_version: Specific embeddings version to use (e.g., "embeddings_2")
-        negative_ratio: Ratio of negative to positive samples
+        negative_ratio: Ratio of negative to positive samples (ignored if using contraindications)
         n_estimators: Number of trees in random forest
         max_depth: Maximum depth of trees
         random_state: Random state for reproducibility
+        contraindications_file: Path to contraindications CSV file (if provided, uses contraindications as negatives instead of generating them)
         
     Returns:
         str: Path to the generated model directory
@@ -318,7 +374,18 @@ def train_model(graph_dir,
     print(f"Created {len(pos_features)} positive feature vectors")
     
     # Generate negative samples
-    negative_pairs = generate_negative_samples(positive_pairs, drug_ids, disease_ids, negative_ratio)
+    if contraindications_file:
+        print(f"Using contraindications from: {contraindications_file}")
+        negative_pairs, contraindications_stats = load_contraindications(contraindications_file, embeddings)
+        # Remove any overlap with positive pairs
+        original_negatives = len(negative_pairs)
+        negative_pairs = negative_pairs - positive_pairs
+        if original_negatives != len(negative_pairs):
+            print(f"Removed {original_negatives - len(negative_pairs)} contraindications that overlapped with positive pairs")
+    else:
+        print("Generating random negative samples")
+        negative_pairs = generate_negative_samples(positive_pairs, drug_ids, disease_ids, negative_ratio)
+        contraindications_stats = None
     
     # Create feature vectors for negative samples
     neg_features, neg_labels = create_feature_vectors(embeddings, negative_pairs)
@@ -407,7 +474,9 @@ def train_model(graph_dir,
             "embeddings_file": embeddings_file,
             "embeddings_version": embeddings_version,
             "embedding_info": embedding_info,
-            "ground_truth": ground_truth_stats
+            "ground_truth": ground_truth_stats,
+            "contraindications": contraindications_stats,
+            "negative_sampling_method": "contraindications" if contraindications_file else "random_generation"
         },
         "model_parameters": {
             "n_estimators": n_estimators,
@@ -483,6 +552,8 @@ def main():
                        help="Maximum depth of trees (default: 10)")
     parser.add_argument("--random-state", type=int, default=42,
                        help="Random state for reproducibility (default: 42)")
+    parser.add_argument("--contraindications", 
+                       help="Path to contraindications CSV file (use contraindications as negatives instead of generating random negatives)")
     
     args = parser.parse_args()
     
@@ -493,7 +564,8 @@ def main():
         negative_ratio=args.negative_ratio,
         n_estimators=args.n_estimators,
         max_depth=args.max_depth,
-        random_state=args.random_state
+        random_state=args.random_state,
+        contraindications_file=args.contraindications
     )
     
     print(f"\nModel training complete!")
