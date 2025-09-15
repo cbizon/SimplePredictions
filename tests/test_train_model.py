@@ -12,7 +12,7 @@ from pathlib import Path
 from src.modeling.train_model import (
     get_next_model_version, get_embedding_info, load_embeddings,
     load_ground_truth, create_feature_vectors, generate_negative_samples,
-    extract_node_ids_from_positives
+    extract_node_ids_from_positives, load_contraindications
 )
 
 
@@ -63,6 +63,22 @@ def sample_ground_truth_file():
 
 
 @pytest.fixture
+def sample_contraindications_file():
+    """Create a sample contraindications CSV file."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+        # Write CSV with the expected column names from contraindications file
+        f.write("final normalized drug id,final normalized disease id,other_col\n")
+        f.write("CHEBI:123,MONDO:789,contraindication1\n")
+        f.write("CHEBI:456,MONDO:123,contraindication2\n")
+        f.write("CHEBI:789,MONDO:456,contraindication3\n")
+        f.write(",MONDO:999,contraindication4\n")  # Row with missing drug ID
+        temp_path = f.name
+    
+    yield temp_path
+    os.unlink(temp_path)
+
+
+@pytest.fixture
 def sample_embeddings():
     """Sample embeddings dictionary."""
     return {
@@ -70,7 +86,9 @@ def sample_embeddings():
         "MONDO:456": np.array([0.5, 0.6, 0.7, 0.8]),
         "HGNC:789": np.array([0.9, 1.0, 1.1, 1.2]),
         "CHEBI:456": np.array([1.3, 1.4, 1.5, 1.6]),
-        "MONDO:123": np.array([1.7, 1.8, 1.9, 2.0])
+        "MONDO:123": np.array([1.7, 1.8, 1.9, 2.0]),
+        "MONDO:789": np.array([2.1, 2.2, 2.3, 2.4]),
+        "CHEBI:789": np.array([2.5, 2.6, 2.7, 2.8])
     }
 
 
@@ -229,6 +247,62 @@ def test_create_feature_vectors_missing_embeddings(sample_embeddings):
     assert pair_labels[0] == ("CHEBI:123", "MONDO:456")
 
 
+def test_create_feature_vectors_with_padding(sample_embeddings):
+    """Test feature vector creation with padding for missing embeddings."""
+    pairs = [("CHEBI:123", "MONDO:456"), ("NONEXISTENT:123", "MONDO:456")]
+    
+    features, pair_labels = create_feature_vectors(sample_embeddings, pairs, pad_missing=True)
+    
+    # Should include both pairs
+    assert features.shape == (2, 8)
+    assert len(pair_labels) == 2
+    assert pair_labels[0] == ("CHEBI:123", "MONDO:456")
+    assert pair_labels[1] == ("NONEXISTENT:123", "MONDO:456")
+    
+    # First pair should have real embeddings
+    expected_first = np.concatenate([sample_embeddings["CHEBI:123"], sample_embeddings["MONDO:456"]])
+    np.testing.assert_array_equal(features[0], expected_first)
+    
+    # Second pair should have zeros for missing drug embedding
+    expected_second = np.concatenate([np.zeros(4), sample_embeddings["MONDO:456"]])
+    np.testing.assert_array_equal(features[1], expected_second)
+
+
+def test_create_feature_vectors_both_missing_with_padding(sample_embeddings):
+    """Test feature vector creation when both embeddings are missing."""
+    pairs = [("NONEXISTENT:123", "NONEXISTENT:456")]
+    
+    features, pair_labels = create_feature_vectors(sample_embeddings, pairs, pad_missing=True)
+    
+    # Should include the pair with all zeros
+    assert features.shape == (1, 8)
+    assert len(pair_labels) == 1
+    assert pair_labels[0] == ("NONEXISTENT:123", "NONEXISTENT:456")
+    
+    # Should be all zeros
+    expected_features = np.zeros(8)
+    np.testing.assert_array_equal(features[0], expected_features)
+
+
+def test_create_feature_vectors_consistent_evaluation_sets(sample_embeddings):
+    """Test that evaluation sets are consistent across different embedding sets."""
+    pairs = [("CHEBI:123", "MONDO:456"), ("NONEXISTENT:123", "MONDO:456")]
+    
+    # Create a second embedding dict missing some nodes
+    limited_embeddings = {"CHEBI:123": sample_embeddings["CHEBI:123"]}
+    
+    # Without padding: different numbers of pairs
+    features1, pairs1 = create_feature_vectors(sample_embeddings, pairs, pad_missing=False)
+    features2, pairs2 = create_feature_vectors(limited_embeddings, pairs, pad_missing=False)
+    assert len(pairs1) != len(pairs2)  # Inconsistent evaluation sets
+    
+    # With padding: same number of pairs
+    features1_pad, pairs1_pad = create_feature_vectors(sample_embeddings, pairs, pad_missing=True)
+    features2_pad, pairs2_pad = create_feature_vectors(limited_embeddings, pairs, pad_missing=True)
+    assert len(pairs1_pad) == len(pairs2_pad)  # Consistent evaluation sets
+    assert pairs1_pad == pairs2_pad  # Same pairs evaluated
+
+
 def test_generate_negative_samples():
     """Test negative sample generation."""
     positive_pairs = {("CHEBI:123", "MONDO:456"), ("CHEBI:789", "MONDO:123")}
@@ -283,3 +357,48 @@ def test_extract_node_ids_empty_pairs():
     
     assert drug_ids == []
     assert disease_ids == []
+
+
+def test_load_contraindications(sample_contraindications_file):
+    """Test loading contraindications without embedding filtering."""
+    negative_pairs, stats = load_contraindications(sample_contraindications_file)
+    
+    # Should have 3 valid pairs (excluding the row with missing drug ID)
+    assert len(negative_pairs) == 3
+    assert ("CHEBI:123", "MONDO:789") in negative_pairs
+    assert ("CHEBI:456", "MONDO:123") in negative_pairs
+    assert ("CHEBI:789", "MONDO:456") in negative_pairs
+    
+    # Check stats
+    assert stats["total_rows"] == 4
+    assert stats["clean_rows"] == 3
+    assert stats["final_negative_pairs"] == 3
+    assert stats["unique_drugs"] == 3
+    assert stats["unique_diseases"] == 3
+
+
+def test_load_contraindications_with_embedding_filter(sample_contraindications_file, sample_embeddings):
+    """Test loading contraindications with embedding filtering."""
+    negative_pairs, stats = load_contraindications(sample_contraindications_file, sample_embeddings)
+    
+    # Should only include pairs where both drug and disease have embeddings
+    assert len(negative_pairs) >= 1
+    assert ("CHEBI:123", "MONDO:789") in negative_pairs
+    assert ("CHEBI:456", "MONDO:123") in negative_pairs
+    assert ("CHEBI:789", "MONDO:456") in negative_pairs
+    
+    assert stats["final_negative_pairs"] == len(negative_pairs)
+
+
+def test_load_contraindications_missing_columns():
+    """Test contraindications loading with missing required columns."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+        f.write("wrong_drug_col,wrong_disease_col\n")
+        f.write("CHEBI:123,MONDO:456\n")
+        temp_path = f.name
+    
+    try:
+        with pytest.raises(ValueError, match="Expected columns"):
+            load_contraindications(temp_path)
+    finally:
+        os.unlink(temp_path)

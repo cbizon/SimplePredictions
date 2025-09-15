@@ -99,11 +99,22 @@ CHEBI:8327,Polythiazide,MONDO:0005009,congestive heart failure,CHEBI:8327|MONDO:
 CHEBI:8327,Polythiazide,MONDO:0005155,liver cirrhosis,CHEBI:8327|MONDO:0005155,true,,
 ```
 
+## Contraindications Data
+
+We also have contraindications data in `ground_truth/Contraindications List.csv` which can be used as negative examples instead of generating random negatives. This file has the same format as the indications list:
+
+```
+final normalized drug id,final normalized drug label,final normalized disease id,final normalized disease label,drug|disease,...
+CHEBI:8327,Polythiazide,MONDO:0002476,anuria,CHEBI:8327|MONDO:0002476,...
+```
+
 ## Machine Learning Pipeline
 
 1. **Graph Creation**: Filter input graphs to create analysis graphs (CCDD, CGD, etc.)
 2. **Embeddings**: Generate node2vec embeddings using PecanPy (512 dimensions)
-3. **Training**: Use Random Forest with 80/20 train/test split and balanced positive/negative sampling
+3. **Training**: Use Random Forest with 80/20 train/test split. Negative sampling can use either:
+   - Random generation from drug/disease permutations (original approach)
+   - Contraindications as true negatives (new approach)
 4. **Training Pairs Storage**: Save exact training pairs to `training_pairs.json` in model directory
 5. **Evaluation**: Ranking-based metrics on comprehensive drug-disease combination space
 
@@ -133,8 +144,25 @@ CHEBI:8327,Polythiazide,MONDO:0005155,liver cirrhosis,CHEBI:8327|MONDO:0005155,t
 - `scripts/run_ccdd_analysis.sh`: Create CCDD graph and generate embeddings
 - `scripts/train_ccdd_model.sh`: Train Random Forest model  
 - `src/graph_modification/create_robokop_input.py`: Graph filtering with data leakage prevention
-- `src/modeling/train_model.py`: Random Forest training with training pairs storage
-- `src/modeling/evaluate_model.py`: Comprehensive ranking-based evaluation with multi-model comparison
+- `src/modeling/train_model.py`: Random Forest training with training pairs storage. Supports contraindications via `--contraindications` flag
+- `src/modeling/evaluate_model.py`: Simplified evaluation interface using model metadata. Only requires `--model-dir` argument
+
+## Usage Examples
+
+**Training with random negatives:**
+```bash
+python src/modeling/train_model.py --graph-dir graphs/robokop_base/CCDD --ground-truth "ground_truth/Indications List.csv"
+```
+
+**Training with contraindications as negatives:**
+```bash
+python src/modeling/train_model.py --graph-dir graphs/robokop_base/CCDD --ground-truth "ground_truth/Indications List.csv" --contraindications "ground_truth/Contraindications List.csv"
+```
+
+**Evaluation (simplified interface):**
+```bash
+python src/modeling/evaluate_model.py --model-dir graphs/robokop_base/CCDD/models/model_2
+```
 
 
 ## ***RULES OF THE ROAD***
