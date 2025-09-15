@@ -221,7 +221,9 @@ def test_plot_ranking_metrics(mock_close, mock_savefig):
             'Test_Model': {
                 'precision_at_k': {1: 1.0, 5: 0.8, 10: 0.6},
                 'recall_at_k': {1: 0.1, 5: 0.4, 10: 0.6},
+                'total_recall_at_k': {1: 0.05, 5: 0.2, 10: 0.3},
                 'hits_at_k': {1: 1.0, 5: 1.0, 10: 1.0},
+                'total_recall_max': 0.5,
                 'k_values': [1, 5, 10]
             }
         }
@@ -275,3 +277,64 @@ def test_calculate_hits_at_k_per_disease():
     # Fraction with hits = 2/2 = 1.0
     assert abs(hits_at_k[1] - 0.5) < 1e-10
     assert abs(hits_at_k[2] - 1.0) < 1e-10
+
+
+def test_missing_embeddings_score_zero():
+    """Test that missing embeddings result in zero/low prediction scores."""
+    from src.modeling.train_model import create_feature_vectors
+    from sklearn.ensemble import RandomForestClassifier
+    
+    # Create test embeddings with distinctive patterns
+    embeddings = {
+        "DRUG:1": np.array([1.0, 0.0, 1.0, 0.0]),  # Distinctive pattern
+        "DRUG:3": np.array([0.0, 1.0, 0.0, 1.0]),  # Different pattern
+        "DISEASE:1": np.array([1.0, 1.0, 0.0, 0.0]),  # Positive pattern
+        "DISEASE:3": np.array([0.0, 0.0, 1.0, 1.0])   # Negative pattern
+        # Missing: "DRUG:2", "DISEASE:2"
+    }
+    
+    # Train with more diverse data
+    positive_pairs = [("DRUG:1", "DISEASE:1"), ("DRUG:3", "DISEASE:1")]
+    negative_pairs = [("DRUG:1", "DISEASE:3"), ("DRUG:3", "DISEASE:3")]
+    
+    pos_features, pos_labels = create_feature_vectors(embeddings, positive_pairs)
+    neg_features, neg_labels = create_feature_vectors(embeddings, negative_pairs)
+    
+    # Add some zero-padded negative examples to train model to recognize zeros as negative
+    zero_negative_pairs = [("DRUG:1", "DISEASE:2"), ("DRUG:2", "DISEASE:1")]  # Missing embeddings
+    zero_neg_features, zero_neg_labels = create_feature_vectors(embeddings, zero_negative_pairs, pad_missing=True)
+    
+    # Combine training data
+    X_train = np.vstack([pos_features, neg_features, zero_neg_features])
+    y_train = np.array([1] * len(pos_features) + [0] * len(neg_features) + [0] * len(zero_neg_features))
+    
+    # Train model with more trees for stability
+    rf = RandomForestClassifier(n_estimators=50, random_state=42, max_depth=10)
+    rf.fit(X_train, y_train)
+    
+    # Test predictions on pairs with missing embeddings
+    test_pairs = [
+        ("DRUG:1", "DISEASE:1"),     # Both present, should be positive
+        ("DRUG:2", "DISEASE:1"),     # Missing drug embedding
+        ("DRUG:1", "DISEASE:2"),     # Missing disease embedding  
+        ("DRUG:2", "DISEASE:2")      # Both embeddings missing
+    ]
+    
+    test_features, test_labels = create_feature_vectors(embeddings, test_pairs, pad_missing=True)
+    predictions = rf.predict_proba(test_features)[:, 1]
+    
+    real_emb_score = predictions[0]  # Both embeddings present
+    missing_drug_score = predictions[1]  # Drug embedding missing
+    missing_disease_score = predictions[2]  # Disease embedding missing
+    both_missing_score = predictions[3]  # Both embeddings missing
+    
+    print(f"Scores - Real: {real_emb_score:.3f}, Missing drug: {missing_drug_score:.3f}, Missing disease: {missing_disease_score:.3f}, Both missing: {both_missing_score:.3f}")
+    
+    # The key test: missing embeddings should result in lower confidence
+    # Since we trained the model to associate zeros with negative class
+    assert real_emb_score >= 0.7, f"Known positive should score high, got {real_emb_score:.3f}"
+    
+    # Missing embeddings should score lower (model should be less confident about zero vectors)
+    assert missing_drug_score <= 0.6, f"Missing drug should score lower, got {missing_drug_score:.3f}"
+    assert missing_disease_score <= 0.6, f"Missing disease should score lower, got {missing_disease_score:.3f}"
+    assert both_missing_score <= 0.6, f"Both missing should score lower, got {both_missing_score:.3f}"

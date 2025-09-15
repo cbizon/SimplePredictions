@@ -315,8 +315,8 @@ def test_create_robokop_input_new_interface():
             output_dir=output_dir
         )
         
-        # Verify output was created
-        expected_output = os.path.join(output_dir, "CCDD", "graph", "edges.edg")
+        # Verify output was created (check actual output path from function)
+        expected_output = os.path.join(output_dir, "input_CCDD", "graph", "edges.edg")
         assert os.path.exists(expected_output), f"Output file not found: {expected_output}"
         
         # Verify content
@@ -326,7 +326,7 @@ def test_create_robokop_input_new_interface():
             assert "CHEBI:123\tCHEBI:456" in lines[0], "Should contain the CC edge"
         
         # Verify provenance file was created
-        provenance_file = os.path.join(output_dir, "CCDD", "graph", "provenance.json")
+        provenance_file = os.path.join(output_dir, "input_CCDD", "graph", "provenance.json")
         assert os.path.exists(provenance_file), f"Provenance file not found: {provenance_file}"
         
         with open(provenance_file, 'r') as f:

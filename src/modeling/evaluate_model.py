@@ -54,7 +54,7 @@ def get_next_evaluation_version(evaluations_dir):
     return max(existing_versions) + 1 if existing_versions else 0
 
 
-def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio):
+def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio, model_dir, original_gt_count, ground_truth_file):
     """Core evaluation logic for a single model.
     
     Args:
@@ -64,69 +64,117 @@ def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, d
         drug_ids: Unique drug IDs from ground truth
         disease_ids: Unique disease IDs from ground truth  
         negative_ratio: Negative sampling ratio used during training
+        model_dir: Directory containing the model and training_pairs.json file
         
     Returns:
         dict: Evaluation results including metrics, test data info, and test pairs
     """
+    print(f"=== GROUND TRUTH & UNIVERSE ===")
+    print(f"Loaded positive pairs: {len(positive_pairs)}")
+    print(f"Unique drugs in ground truth: {len(drug_ids)}")  
+    print(f"Unique diseases in ground truth: {len(disease_ids)}")
+    print(f"Total possible combinations: {len(drug_ids) * len(disease_ids)}")
+    
+    # Check embedding coverage for all indications
+    all_positive_pairs, _ = load_ground_truth(ground_truth_file, embeddings=None)
+    all_drug_ids = set(pair[0] for pair in all_positive_pairs)
+    all_disease_ids = set(pair[1] for pair in all_positive_pairs)
+    drugs_with_embeddings = len([d for d in all_drug_ids if d in embeddings])
+    diseases_with_embeddings = len([d for d in all_disease_ids if d in embeddings])
+    
+    print(f"=== EMBEDDING COVERAGE ===")
+    print(f"Drugs in original indications: {len(all_drug_ids)}, with embeddings: {drugs_with_embeddings} ({drugs_with_embeddings/len(all_drug_ids)*100:.1f}%)")
+    print(f"Diseases in original indications: {len(all_disease_ids)}, with embeddings: {diseases_with_embeddings} ({diseases_with_embeddings/len(all_disease_ids)*100:.1f}%)")
+    
     # Generate ALL possible drug-disease combinations from ground truth
     all_combinations = [(drug, disease) for drug in drug_ids for disease in disease_ids]
     
-    # Recreate the training data to identify what was seen during training
-    pos_features_train, pos_labels_train = create_feature_vectors(embeddings, positive_pairs)
-    pos_targets_train = np.ones(len(pos_features_train))
-    negative_pairs_train = generate_negative_samples(positive_pairs, drug_ids, disease_ids, negative_ratio)
-    neg_features_train, neg_labels_train = create_feature_vectors(embeddings, negative_pairs_train)
-    neg_targets_train = np.zeros(len(neg_features_train))
+    # Read training pairs from file (instead of reconstructing)
+    training_pairs_file = os.path.join(model_dir, "training_pairs.json")
     
-    X_train_full = np.vstack([pos_features_train, neg_features_train])
-    y_train_full = np.hstack([pos_targets_train, neg_targets_train])
-    pair_labels_full = pos_labels_train + neg_labels_train
+    if os.path.exists(training_pairs_file):
+        print(f"=== READING TRAINING PAIRS ===")
+        with open(training_pairs_file, 'r') as f:
+            training_data = json.load(f)
+        
+        training_positives = [tuple(pair) for pair in training_data["training_positives"]]
+        training_negatives = [tuple(pair) for pair in training_data["training_negatives"]]
+        training_pairs_to_exclude = set(training_positives + training_negatives)
+        
+        print(f"Training positives to exclude: {len(training_positives)}")
+        print(f"Training negatives to exclude: {len(training_negatives)}")
+        print(f"Total training pairs to exclude: {len(training_pairs_to_exclude)}")
+        
+        print(f"Ground truth positives used in training: {len(training_positives)}")
+        print(f"Ground truth positives remaining for evaluation: {len(positive_pairs) - len(training_positives)}")
+    else:
+        print(f"Warning: Training pairs file not found: {training_pairs_file}")
+        print("Using empty exclusion set (will evaluate on all combinations)")
+        training_pairs_to_exclude = set()
     
-    # Get training/test split using the same split as during training
-    X_train, X_test_unused, y_train, y_test_unused, indices_train, indices_test = train_test_split(
-        X_train_full, y_train_full, range(len(pair_labels_full)), test_size=0.2, random_state=42, stratify=y_train_full
-    )
-    training_pairs = set([pair_labels_full[i] for i in indices_train])
-    test_pairs_from_split = set([pair_labels_full[i] for i in indices_test])
+    # Remove training pairs from evaluation set
+    evaluation_combinations = [pair for pair in all_combinations if pair not in training_pairs_to_exclude]
     
-    # Remove only training pairs from evaluation, but include test pairs + unseen combinations
-    evaluation_combinations = [pair for pair in all_combinations if pair not in training_pairs]
+    print(f"=== EVALUATION SET ===") 
+    print(f"All combinations: {len(all_combinations)}")
+    print(f"Training pairs to exclude: {len(training_pairs_to_exclude)}")
+    print(f"Evaluation combinations: {len(evaluation_combinations)}")
     
-    # Make sure we include the test split pairs (they should already be included but let's be explicit)
-    evaluation_combinations_set = set(evaluation_combinations)
-    missing_test_pairs = test_pairs_from_split - evaluation_combinations_set
-    if missing_test_pairs:
-        evaluation_combinations.extend(list(missing_test_pairs))
+    # Create features for evaluation combinations - pad missing embeddings with zeros
+    # This ensures all models evaluate the same set of drug-disease pairs
+    eval_features, eval_pairs = create_feature_vectors(embeddings, evaluation_combinations, pad_missing=True)
     
-    # Create features for evaluation combinations
-    eval_features, eval_pairs = create_feature_vectors(embeddings, evaluation_combinations)
+    # Label evaluation combinations - only the test positives, not training positives
+    evaluation_positives = set(positive_pairs) - set(training_positives)
+    y_true = np.array([1 if pair in evaluation_positives else 0 for pair in eval_pairs])
     
-    # Label evaluation combinations (known positives = 1, rest = 0)
-    y_true = np.array([1 if pair in positive_pairs else 0 for pair in eval_pairs])
+    print(f"=== EVALUATION SET ===") 
+    print(f"All combinations: {len(all_combinations)}")
+    print(f"Evaluation combinations: {len(evaluation_combinations)}")
+    print(f"Evaluation features created: {len(eval_features)}")
+    print(f"Evaluation pairs labeled as positive: {int(np.sum(y_true))}")
+    
+    # Max recall should now be 1.0 since we're only looking for test positives in the evaluation set
+    print(f"Max possible recall: 1.0 (all evaluation positives should be findable)")
+    print(f"Evaluation positives should equal remaining GT positives: {int(np.sum(y_true)) == len(evaluation_positives)}")
     
     # Generate predictions for ALL evaluation combinations  
     y_scores = rf_model.predict_proba(eval_features)[:, 1]  # Probability of positive class
     
-    # Define K values to evaluate
-    k_values = [1, 5, 10, 20, 50, 100, 200, 500, 1000]
-    k_values = [k for k in k_values if k <= len(y_scores)]  # Only valid K values
+    # Define K values to evaluate - logarithmic spacing plus maximum
+    max_k = len(y_scores)
+    k_values = [1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000]
+    k_values = [k for k in k_values if k <= max_k]  # Only valid K values
+    
+    # Always include the maximum K
+    if max_k not in k_values:
+        k_values.append(max_k)
+    
+    k_values = sorted(k_values)
     
     # Calculate ranking metrics (global precision/recall, per-disease hits)
     precision_at_k = calculate_precision_at_k(y_true, y_scores, k_values)
     recall_at_k = calculate_recall_at_k(y_true, y_scores, k_values)
+    # Calculate total recall using original ground truth count
+    total_recall_denominator = original_gt_count - len(training_positives)
+    sorted_indices = np.argsort(y_scores)[::-1]
+    sorted_true = y_true[sorted_indices]
+    total_recall_at_k = {k: np.sum(sorted_true[:k]) / total_recall_denominator if total_recall_denominator > 0 else 0 for k in k_values}
+    # Calculate theoretical maximum (all evaluation positives found)
+    total_recall_max = int(np.sum(y_true)) / total_recall_denominator if total_recall_denominator > 0 else 0
     hits_at_k = calculate_hits_at_k_per_disease(eval_pairs, y_true, y_scores, k_values)
     
     return {
         'precision_at_k': precision_at_k,
         'recall_at_k': recall_at_k,
+        'total_recall_at_k': total_recall_at_k,
+        'total_recall_max': total_recall_max,
         'hits_at_k': hits_at_k,
         'k_values': k_values,
         'evaluation_combinations': len(evaluation_combinations),
         'evaluation_positives': int(np.sum(y_true)),
         'evaluation_negatives': int(len(y_true) - np.sum(y_true)),
-        'training_pairs_excluded': len(training_pairs),
-        'test_pairs_from_split': len(test_pairs_from_split),
-        'missing_test_pairs': len(missing_test_pairs),
+        'training_pairs_excluded': len(training_pairs_to_exclude),
         'all_combinations': len(all_combinations),
         'y_true': y_true,
         'y_scores': y_scores,
@@ -254,7 +302,10 @@ def calculate_recall_at_k(y_true, y_scores, k_values):
 
 
 def plot_ranking_metrics(metrics_data, output_dir):
-    """Create plots for ranking metrics with support for multiple models.
+    """Create plots for ranking metrics with two K-range views.
+    
+    Layout: 3 rows (Precision, Recall, Hits) x 2 columns (K≤1000, Full Range)
+    All models are shown together on each plot for comparison.
     
     Args:
         metrics_data: Dictionary with model labels as keys and their metrics as values
@@ -264,7 +315,8 @@ def plot_ranking_metrics(metrics_data, output_dir):
     plt.style.use('default')
     sns.set_palette("husl")
     
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    # Create grid: 4 rows x 2 columns
+    fig, axes = plt.subplots(4, 2, figsize=(15, 16))
     fig.suptitle('Drug-Disease Prediction Ranking Metrics', fontsize=16)
     
     # Get all k values (union of all models)
@@ -273,68 +325,129 @@ def plot_ranking_metrics(metrics_data, output_dir):
         all_k_values.update(model_data['k_values'])
     all_k_values = sorted(all_k_values)
     
-    # Plot 1: Precision@K
-    for i, (label, model_data) in enumerate(metrics_data.items()):
-        k_vals = [k for k in model_data['k_values'] if not np.isnan(model_data['precision_at_k'][k])]
-        prec_vals = [model_data['precision_at_k'][k] for k in k_vals]
-        axes[0, 0].plot(k_vals, prec_vals, 'o-', linewidth=2, markersize=6, label=label)
+    k_threshold = 1000  # Threshold for zoomed view
     
-    axes[0, 0].set_xlabel('K (Top Predictions)')
+    # Row 0: Precision@K
+    for i, (label, model_data) in enumerate(metrics_data.items()):
+        # Column 0: K ≤ 1000 (zoomed view)
+        k_vals_zoom = [k for k in model_data['k_values'] if k <= k_threshold and not np.isnan(model_data['precision_at_k'][k])]
+        prec_vals_zoom = [model_data['precision_at_k'][k] for k in k_vals_zoom]
+        axes[0, 0].plot(k_vals_zoom, prec_vals_zoom, 'o-', linewidth=2, markersize=6, label=label)
+        
+        # Column 1: Full range - use ALL k values for this model
+        k_vals_full = [k for k in all_k_values if k in model_data['k_values'] and not np.isnan(model_data['precision_at_k'][k])]
+        prec_vals_full = [model_data['precision_at_k'][k] for k in k_vals_full]
+        axes[0, 1].plot(k_vals_full, prec_vals_full, 'o-', linewidth=2, markersize=4, label=label)
+    
+    # Configure Precision@K plots
     axes[0, 0].set_ylabel('Precision@K')
-    axes[0, 0].set_title('Precision@K: Accuracy of Top K Predictions')
+    axes[0, 0].set_title(f'Precision@K (K ≤ {k_threshold})')
     axes[0, 0].grid(True, alpha=0.3)
     axes[0, 0].set_ylim(0, 1)
     if len(metrics_data) > 1:
         axes[0, 0].legend()
     
-    # Plot 2: Recall@K
-    for i, (label, model_data) in enumerate(metrics_data.items()):
-        k_vals = [k for k in model_data['k_values'] if not np.isnan(model_data['recall_at_k'][k])]
-        recall_vals = [model_data['recall_at_k'][k] for k in k_vals]
-        axes[0, 1].plot(k_vals, recall_vals, 'o-', linewidth=2, markersize=6, label=label)
-    
-    axes[0, 1].set_xlabel('K (Top Predictions)')
-    axes[0, 1].set_ylabel('Recall@K')
-    axes[0, 1].set_title('Recall@K: Coverage of True Positives')
+    axes[0, 1].set_ylabel('Precision@K')
+    axes[0, 1].set_title('Precision@K (Full Range)')
     axes[0, 1].grid(True, alpha=0.3)
     axes[0, 1].set_ylim(0, 1)
     if len(metrics_data) > 1:
         axes[0, 1].legend()
     
-    # Plot 3: Hits@K
+    # Row 1: Recall@K
     for i, (label, model_data) in enumerate(metrics_data.items()):
-        k_vals = [k for k in model_data['k_values'] if not np.isnan(model_data['hits_at_k'][k])]
-        hits_vals = [model_data['hits_at_k'][k] for k in k_vals]
-        axes[1, 0].plot(k_vals, hits_vals, 'o-', linewidth=2, markersize=6, label=label)
+        # Column 0: K ≤ 1000 (zoomed view)
+        k_vals_zoom = [k for k in model_data['k_values'] if k <= k_threshold and not np.isnan(model_data['recall_at_k'][k])]
+        recall_vals_zoom = [model_data['recall_at_k'][k] for k in k_vals_zoom]
+        axes[1, 0].plot(k_vals_zoom, recall_vals_zoom, 'o-', linewidth=2, markersize=6, label=label)
+        
+        # Column 1: Full range - use ALL k values for this model
+        k_vals_full = [k for k in all_k_values if k in model_data['k_values'] and not np.isnan(model_data['recall_at_k'][k])]
+        recall_vals_full = [model_data['recall_at_k'][k] for k in k_vals_full]
+        axes[1, 1].plot(k_vals_full, recall_vals_full, 'o-', linewidth=2, markersize=4, label=label)
     
-    axes[1, 0].set_xlabel('K (Top Predictions)')
-    axes[1, 0].set_ylabel('Hits@K')
-    axes[1, 0].set_title('Hits@K: At Least One Hit in Top K')
+    # Configure Recall@K plots
+    axes[1, 0].set_ylabel('Recall@K')
+    axes[1, 0].set_title(f'Recall@K (K ≤ {k_threshold})')
     axes[1, 0].grid(True, alpha=0.3)
     axes[1, 0].set_ylim(0, 1)
     if len(metrics_data) > 1:
         axes[1, 0].legend()
     
-    # Plot 4: All metrics for first model (or single model if only one)
-    first_model_data = next(iter(metrics_data.values()))
-    k_vals = [k for k in first_model_data['k_values'] if not np.isnan(first_model_data['precision_at_k'][k])]
-    prec_vals = [first_model_data['precision_at_k'][k] for k in k_vals]
-    recall_vals = [first_model_data['recall_at_k'][k] for k in k_vals]
-    hits_vals = [first_model_data['hits_at_k'][k] for k in k_vals]
-    
-    axes[1, 1].plot(k_vals, prec_vals, 'o-', label='Precision@K', linewidth=2, markersize=4)
-    axes[1, 1].plot(k_vals, recall_vals, 'o-', label='Recall@K', linewidth=2, markersize=4)
-    axes[1, 1].plot(k_vals, hits_vals, 'o-', label='Hits@K', linewidth=2, markersize=4)
-    axes[1, 1].set_xlabel('K (Top Predictions)')
-    axes[1, 1].set_ylabel('Metric Value')
-    if len(metrics_data) == 1:
-        axes[1, 1].set_title('All Ranking Metrics')
-    else:
-        first_model_label = next(iter(metrics_data.keys()))
-        axes[1, 1].set_title(f'All Ranking Metrics - {first_model_label}')
-    axes[1, 1].legend()
+    axes[1, 1].set_ylabel('Recall@K')
+    axes[1, 1].set_title('Recall@K (Full Range)')
     axes[1, 1].grid(True, alpha=0.3)
     axes[1, 1].set_ylim(0, 1)
+    if len(metrics_data) > 1:
+        axes[1, 1].legend()
+    
+    # Row 2: Total Recall@K
+    for i, (label, model_data) in enumerate(metrics_data.items()):
+        # Column 0: K ≤ 1000 (zoomed view)
+        k_vals_zoom = [k for k in model_data['k_values'] if k <= k_threshold and not np.isnan(model_data['total_recall_at_k'][k])]
+        total_recall_vals_zoom = [model_data['total_recall_at_k'][k] for k in k_vals_zoom]
+        axes[2, 0].plot(k_vals_zoom, total_recall_vals_zoom, 'o-', linewidth=2, markersize=6, label=label)
+        
+        # Column 1: Full range - use ALL k values for this model
+        k_vals_full = [k for k in all_k_values if k in model_data['k_values'] and not np.isnan(model_data['total_recall_at_k'][k])]
+        total_recall_vals_full = [model_data['total_recall_at_k'][k] for k in k_vals_full]
+        axes[2, 1].plot(k_vals_full, total_recall_vals_full, 'o-', linewidth=2, markersize=4, label=label)
+    
+    # Configure Total Recall@K plots
+    axes[2, 0].set_ylabel('Total Recall@K')
+    axes[2, 0].set_title(f'Total Recall@K (K ≤ {k_threshold})')
+    axes[2, 0].grid(True, alpha=0.3)
+    axes[2, 0].set_ylim(0, 1)
+    
+    # Add theoretical maximum lines - each model has its own max
+    for i, (label, model_data) in enumerate(metrics_data.items()):
+        if 'total_recall_max' in model_data:
+            theoretical_max = model_data['total_recall_max']
+            # Get color from the lines plotted on the current axes
+            color = axes[2, 0].lines[i].get_color() if i < len(axes[2, 0].lines) else f'C{i}'
+            axes[2, 0].axhline(y=theoretical_max, color=color, linestyle='--', alpha=0.7, 
+                              label=f'{label} Max ({theoretical_max:.3f})')
+            axes[2, 1].axhline(y=theoretical_max, color=color, linestyle='--', alpha=0.7,
+                              label=f'{label} Max ({theoretical_max:.3f})')
+    
+    if len(metrics_data) > 1:
+        axes[2, 0].legend()
+    
+    axes[2, 1].set_ylabel('Total Recall@K')
+    axes[2, 1].set_title('Total Recall@K (Full Range)')
+    axes[2, 1].grid(True, alpha=0.3)
+    axes[2, 1].set_ylim(0, 1)
+    if len(metrics_data) > 1:
+        axes[2, 1].legend()
+    
+    # Row 3: Hits@K
+    for i, (label, model_data) in enumerate(metrics_data.items()):
+        # Column 0: K ≤ 1000 (zoomed view)
+        k_vals_zoom = [k for k in model_data['k_values'] if k <= k_threshold and not np.isnan(model_data['hits_at_k'][k])]
+        hits_vals_zoom = [model_data['hits_at_k'][k] for k in k_vals_zoom]
+        axes[3, 0].plot(k_vals_zoom, hits_vals_zoom, 'o-', linewidth=2, markersize=6, label=label)
+        
+        # Column 1: Full range - use ALL k values for this model
+        k_vals_full = [k for k in all_k_values if k in model_data['k_values'] and not np.isnan(model_data['hits_at_k'][k])]
+        hits_vals_full = [model_data['hits_at_k'][k] for k in k_vals_full]
+        axes[3, 1].plot(k_vals_full, hits_vals_full, 'o-', linewidth=2, markersize=4, label=label)
+    
+    # Configure Hits@K plots
+    axes[3, 0].set_xlabel('K (Top Predictions)')
+    axes[3, 0].set_ylabel('Hits@K')
+    axes[3, 0].set_title(f'Hits@K (K ≤ {k_threshold})')
+    axes[3, 0].grid(True, alpha=0.3)
+    axes[3, 0].set_ylim(0, 1)
+    if len(metrics_data) > 1:
+        axes[3, 0].legend()
+    
+    axes[3, 1].set_xlabel('K (Top Predictions)')
+    axes[3, 1].set_ylabel('Hits@K')
+    axes[3, 1].set_title('Hits@K (Full Range)')
+    axes[3, 1].grid(True, alpha=0.3)
+    axes[3, 1].set_ylim(0, 1)
+    if len(metrics_data) > 1:
+        axes[3, 1].legend()
     
     plt.tight_layout()
     
@@ -445,6 +558,10 @@ def evaluate_model_with_provenance(model_path,
     
     # Load embeddings and ground truth
     embeddings = load_embeddings(embeddings_file)
+    # Get original ground truth count before filtering
+    _, original_ground_truth_stats = load_ground_truth(ground_truth_file, embeddings=None)
+    original_gt_count = original_ground_truth_stats["clean_rows"]
+    # Load filtered ground truth
     positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
     drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
     
@@ -458,14 +575,12 @@ def evaluate_model_with_provenance(model_path,
     print(f"Using {len(drug_ids)} drugs and {len(disease_ids)} diseases from ground truth")
     
     # Use shared evaluation logic
-    eval_results = evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio)
+    model_dir = os.path.dirname(model_path)
+    eval_results = evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio, model_dir, original_gt_count, ground_truth_file)
     
     print(f"Generated {eval_results['all_combinations']:,} total drug-disease combinations")
     print(f"Training pairs to exclude: {eval_results['training_pairs_excluded']:,}")
-    print(f"Test pairs from 20% split: {eval_results['test_pairs_from_split']:,}")
-    if eval_results['missing_test_pairs'] > 0:
-        print(f"Added {eval_results['missing_test_pairs']} missing test pairs to evaluation")
-    print(f"Evaluating on {eval_results['evaluation_combinations']:,} combinations (includes 20% test split + unseen combinations)")
+    print(f"Evaluating on {eval_results['evaluation_combinations']:,} combinations")
     print(f"Evaluation set: {eval_results['evaluation_combinations']:,} combinations ({eval_results['evaluation_positives']:,} known positives)")
     print(f"Test predictions: {len(eval_results['y_scores'])}")
     print(f"Test positives: {eval_results['evaluation_positives']}")
@@ -484,7 +599,9 @@ def evaluate_model_with_provenance(model_path,
     single_model_metrics = {
         os.path.basename(model_path): {
             'precision_at_k': precision_at_k,
-            'recall_at_k': recall_at_k, 
+            'recall_at_k': recall_at_k,
+            'total_recall_at_k': eval_results['total_recall_at_k'],
+            'total_recall_max': eval_results['total_recall_max'],
             'hits_at_k': hits_at_k,
             'k_values': k_values
         }
@@ -663,6 +780,10 @@ def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
         
         # Load embeddings and ground truth
         embeddings = load_embeddings(embeddings_file)
+        # Get original ground truth count before filtering
+        _, original_ground_truth_stats = load_ground_truth(ground_truth_file, embeddings=None)
+        original_gt_count = original_ground_truth_stats["clean_rows"]
+        # Load filtered ground truth
         positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
         drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
         
@@ -675,14 +796,12 @@ def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
         print(f"  Using {len(drug_ids)} drugs and {len(disease_ids)} diseases from ground truth")
         
         # Use shared evaluation logic
-        eval_results = evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio)
+        model_dir = os.path.dirname(model_path)
+        eval_results = evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio, model_dir, original_gt_count, ground_truth_file)
         
         print(f"  Total possible combinations: {eval_results['all_combinations']:,}")
         print(f"  Training pairs to exclude: {eval_results['training_pairs_excluded']:,}")
-        print(f"  Test pairs from 20% split: {eval_results['test_pairs_from_split']:,}")
-        if eval_results['missing_test_pairs'] > 0:
-            print(f"  Added {eval_results['missing_test_pairs']} missing test pairs to evaluation")
-        print(f"  Evaluating on {eval_results['evaluation_combinations']:,} combinations (includes 20% test split + unseen combinations)")
+        print(f"  Evaluating on {eval_results['evaluation_combinations']:,} combinations")
         print(f"  Test predictions: {len(eval_results['y_scores'])} ({eval_results['evaluation_positives']} positive, {eval_results['evaluation_negatives']} negative)")
         
         # Extract results from shared function
@@ -713,6 +832,8 @@ def evaluate_multiple_models_with_provenance(model_configs, ground_truth_file):
         all_metrics_data[label] = {
             'precision_at_k': precision_at_k,
             'recall_at_k': recall_at_k,
+            'total_recall_at_k': eval_results['total_recall_at_k'],
+            'total_recall_max': eval_results['total_recall_max'],
             'hits_at_k': hits_at_k,
             'k_values': k_values
         }

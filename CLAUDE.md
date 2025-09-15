@@ -102,17 +102,39 @@ CHEBI:8327,Polythiazide,MONDO:0005155,liver cirrhosis,CHEBI:8327|MONDO:0005155,t
 ## Machine Learning Pipeline
 
 1. **Graph Creation**: Filter input graphs to create analysis graphs (CCDD, CGD, etc.)
-2. **Embeddings**: Generate node2vec embeddings using PecanPy
-3. **Training**: Use Random Forest with balanced positive/negative sampling
-4. **Evaluation**: Ranking-based metrics (Precision@K, Recall@K, Hits@K) on held-out test set
+2. **Embeddings**: Generate node2vec embeddings using PecanPy (512 dimensions)
+3. **Training**: Use Random Forest with 80/20 train/test split and balanced positive/negative sampling
+4. **Training Pairs Storage**: Save exact training pairs to `training_pairs.json` in model directory
+5. **Evaluation**: Ranking-based metrics on comprehensive drug-disease combination space
+
+## Evaluation Methodology
+
+**Data Leakage Prevention**: Training pairs are saved during model training and read during evaluation to ensure no overlap between training and evaluation sets.
+
+**Evaluation Set Construction**:
+- Generate ALL possible drug-disease combinations from ground truth universe
+- Exclude training pairs (both positive and negative) 
+- Use zero-padding for missing embeddings to ensure consistent evaluation across models
+- Evaluate on ~1M combinations per model with logarithmic K sampling
+
+**Metrics Calculated**:
+- **Precision@K**: Accuracy of top K predictions  
+- **Recall@K**: Fraction of test positives found in top K (max = 1.0)
+- **Total Recall@K**: Fraction of all discoverable indications found (accounts for embedding coverage limits)
+- **Hits@K**: Fraction of diseases with at least one hit in top K
+
+**Total Recall Context**: 
+- Denominator = Original indications - Training positives used
+- Shows realistic performance bounds given embedding coverage constraints
+- Theoretical maximum shown as dashed line on plots (e.g., ~0.11 for CCDD)
 
 ## Key Scripts
 
 - `scripts/run_ccdd_analysis.sh`: Create CCDD graph and generate embeddings
-- `scripts/train_ccdd_model.sh`: Train Random Forest model
+- `scripts/train_ccdd_model.sh`: Train Random Forest model  
 - `src/graph_modification/create_robokop_input.py`: Graph filtering with data leakage prevention
-- `src/modeling/train_rf_model.py`: Random Forest training with proper negative sampling
-- `src/modeling/evaluate_predictions.py`: Ranking-based evaluation on test set
+- `src/modeling/train_model.py`: Random Forest training with training pairs storage
+- `src/modeling/evaluate_model.py`: Comprehensive ranking-based evaluation with multi-model comparison
 
 
 ## ***RULES OF THE ROAD***

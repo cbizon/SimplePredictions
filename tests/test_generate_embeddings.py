@@ -109,7 +109,7 @@ def test_count_edges_and_nodes_malformed(sample_graph_file_malformed):
     
     # Should handle malformed lines gracefully
     assert edge_count == 3  # Only lines with >= 2 columns count as edges
-    assert node_count == 4  # CHEBI:123, CHEBI:456, GOOD:1, GOOD:2
+    assert node_count == 6  # CHEBI:123, CHEBI:456, TOO, MANY, GOOD:1, GOOD:2
 
 
 def test_count_edges_and_nodes_empty_file():

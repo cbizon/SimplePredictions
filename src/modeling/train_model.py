@@ -159,28 +159,47 @@ def load_ground_truth(ground_truth_file, embeddings=None):
     return positive_pairs, ground_truth_stats
 
 
-def create_feature_vectors(embeddings, drug_disease_pairs):
-    """Create feature vectors for specific Drug-Disease pairs only.
+def create_feature_vectors(embeddings, drug_disease_pairs, pad_missing=False):
+    """Create feature vectors for Drug-Disease pairs.
     
     Args:
         embeddings: Dict mapping node_id to embedding vector
         drug_disease_pairs: List/set of (drug_id, disease_id) tuples
+        pad_missing: If True, include all pairs using zero vectors for missing embeddings.
+                    If False, exclude pairs with missing embeddings (default behavior).
         
     Returns:
         tuple: (feature_matrix, pair_labels) where feature_matrix is concatenated embeddings
     """
+    if not embeddings:
+        raise ValueError("Empty embeddings dict provided")
+    
     features = []
     pair_labels = []
     
+    # Get embedding dimension and create zero vector for missing embeddings
+    embedding_dim = len(next(iter(embeddings.values())))
+    zero_embedding = np.zeros(embedding_dim)
+    
     for drug_id, disease_id in drug_disease_pairs:
-        if drug_id in embeddings and disease_id in embeddings:
-            # Concatenate drug and disease embeddings
-            drug_emb = embeddings[drug_id]
-            disease_emb = embeddings[disease_id]
+        if pad_missing:
+            # Include all pairs, use zero vectors for missing embeddings
+            drug_emb = embeddings.get(drug_id, zero_embedding)
+            disease_emb = embeddings.get(disease_id, zero_embedding)
             combined_features = np.concatenate([drug_emb, disease_emb])
             
             features.append(combined_features)
             pair_labels.append((drug_id, disease_id))
+        else:
+            # Original behavior: only include pairs where both embeddings exist
+            if drug_id in embeddings and disease_id in embeddings:
+                # Concatenate drug and disease embeddings
+                drug_emb = embeddings[drug_id]
+                disease_emb = embeddings[disease_id]
+                combined_features = np.concatenate([drug_emb, disease_emb])
+                
+                features.append(combined_features)
+                pair_labels.append((drug_id, disease_id))
     
     return np.array(features), pair_labels
 
@@ -315,9 +334,26 @@ def train_model(graph_dir,
     print(f"Total samples: {len(X)} (positive: {len(pos_features)}, negative: {len(neg_features)})")
     
     # Train-test split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=random_state, stratify=y
+    X_train, X_test, y_train, y_test, indices_train, indices_test = train_test_split(
+        X, y, range(len(pair_labels)), test_size=0.2, random_state=random_state, stratify=y
     )
+    
+    # Extract the actual pairs used in training
+    training_positives = [pair_labels[i] for i in indices_train if y[i] == 1]
+    training_negatives = [pair_labels[i] for i in indices_train if y[i] == 0]
+    
+    print(f"Training pairs: {len(training_positives)} positives, {len(training_negatives)} negatives")
+    
+    # Write training pairs file
+    training_pairs = {
+        "training_positives": training_positives,
+        "training_negatives": training_negatives
+    }
+    training_pairs_file = os.path.join(version_dir, "training_pairs.json")
+    with open(training_pairs_file, 'w') as f:
+        json.dump(training_pairs, f, indent=2)
+    
+    print(f"Training pairs saved: {training_pairs_file}")
     
     # Train Random Forest
     print("Training Random Forest...")
