@@ -60,9 +60,8 @@ Note the subject/object/predicate structure. The subject and object are defined 
 /graphs/{graphname}/graph: node and edge files
 /graphs/{graphname}/embeddings: node embedding files
 /graphs/{graphname}/embeddings/{embeddings_subdirectories}: node embedding files
-/graphs/{graphname}/models: models and results
-/graphs/{graphname}/models/{models subdirectories}: models and results
-/evaluations/{evaluations subdirectories}
+/graphs/{graphname}/embeddings/{embeddings_subdirectories}/models: models and results
+/graphs/{graphname}/embeddings/{embeddings_subdirectories}/models/{model_subdirectories}: individual model runs and evaluations
 /src
 /src/graph_modification: code for modifying input_graphs to create analysis graphs
 /src/embedding: codes for creating n2v embeddings from the analysis graphs
@@ -70,7 +69,15 @@ Note the subject/object/predicate structure. The subject and object are defined 
 /tests: pytests for checking the code.
 /scripts: scripts for controlling the process
 
-Note the subdirectories for embeddings and models and evaluations.  These are directories related to each run of something. So for instance in embeddings, there might be embeddings\_0 holding the embeddings for the first embeddings calculated for that graph.  Those subdirectories also contain provenance files explaining where they came from.
+Note the new hierarchical structure: **models are now nested under embeddings**, so the path is `/graphs/{graphname}/embeddings/{embeddings_version}/models/{model_version}/`. Each model directory contains:
+- `rf_model.pkl`: The trained Random Forest model
+- `provenance.json`: Complete metadata including model parameters and training info
+- `training_pairs.json`: Exact training pairs used (for data leakage prevention)
+- `evaluation_metrics.json`: Evaluation results (created when evaluation is run)
+- `results.json`: Basic training performance metrics
+- `classification_report.txt`: Detailed classification metrics
+
+Evaluations are now saved directly within each model directory as `evaluation_metrics.json`, eliminating the need for a separate `/evaluations` directory.
 
 ## Analysis
 
@@ -161,7 +168,12 @@ python src/modeling/train_model.py --graph-dir graphs/robokop_base/CCDD --ground
 
 **Evaluation (simplified interface):**
 ```bash
-python src/modeling/evaluate_model.py --model-dir graphs/robokop_base/CCDD/models/model_2
+python src/modeling/evaluate_model.py --model-dir graphs/robokop_base_nonredundant_CCDD/embeddings/embeddings_0/models/model_0
+```
+
+**Batch evaluation of all models:**
+```bash
+./regenerate_all.sh  # Runs evaluations for all existing models
 ```
 
 

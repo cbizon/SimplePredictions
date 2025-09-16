@@ -45,11 +45,15 @@ pip install pecanpy jsonlines
    ./scripts/train_ccdd_model.sh
    ```
 
-3. **Evaluate Model** (optional, automatic in training):
+3. **Evaluate Model** (new simplified interface):
    ```bash
    python src/modeling/evaluate_model.py \
-     --graph-dir graphs/CCDD \
-     --ground-truth "ground_truth/Indications List.csv"
+     --model-dir graphs/robokop_base_nonredundant_CCDD/embeddings/embeddings_0/models/model_0
+   ```
+
+4. **Run Full Pipeline** (create graphs, embeddings, models, and evaluations):
+   ```bash
+   ./regenerate_all.sh
    ```
 
 ## Project Structure
@@ -63,19 +67,41 @@ pip install pecanpy jsonlines
 │       ├── edges.jsonl
 │       └── nodes.jsonl
 ├── ground_truth/              # Known drug-disease relationships
-│   └── Indications List.csv   # FDA/EMA approved indications
+│   ├── Indications List.csv   # FDA/EMA approved indications
+│   └── Contraindications List.csv  # Known contraindications (negative examples)
 ├── graphs/                    # Processed graph data
-│   └── CCDD/                  # Chemical-Chemical + Disease-Disease graph
+│   └── {graphname}/           # e.g., robokop_base_nonredundant_CCDD
 │       ├── graph/             # Filtered edges and nodes
-│       ├── embeddings/        # Node2vec embeddings
-│       └── models/            # Trained models and results
+│       └── embeddings/        # Node2vec embeddings
+│           └── embeddings_0/  # Versioned embedding runs
+│               ├── embeddings.emb      # Node2vec embedding vectors
+│               ├── provenance.json     # Embedding generation metadata
+│               └── models/             # Models trained on these embeddings
+│                   ├── model_0/        # Individual model runs
+│                   │   ├── rf_model.pkl           # Trained Random Forest
+│                   │   ├── provenance.json        # Complete model metadata
+│                   │   ├── training_pairs.json    # Exact training data used
+│                   │   ├── evaluation_metrics.json # Evaluation results
+│                   │   └── results.json           # Training performance
+│                   └── model_1/        # Additional model variants (e.g., with contraindications)
 ├── src/
 │   ├── graph_modification/    # Graph filtering and preprocessing
+│   ├── embedding/             # Node2vec embedding generation
 │   ├── modeling/              # ML training and evaluation
 │   └── ...
 ├── scripts/                   # Pipeline automation scripts
 └── tests/                     # Unit tests
 ```
+
+### New Hierarchical Organization
+
+**Models are now nested under embeddings**: `/graphs/{graphname}/embeddings/{version}/models/{model_version}/`
+
+This structure ensures that:
+- Each model is directly associated with its specific embedding version
+- Evaluation results are stored alongside the model that generated them
+- The complete provenance chain is maintained: graph → embeddings → model → evaluation
+- No separate `/evaluations/` directory is needed
 
 ### Input Datasets
 
@@ -131,12 +157,14 @@ Recent CCDD model performance on test set:
 
 ### Core Scripts
 - `src/graph_modification/create_robokop_input.py`: Graph filtering with data leakage prevention
+- `src/embedding/generate_embeddings.py`: Node2vec embedding generation using PecanPy
 - `src/modeling/train_model.py`: Random Forest training with balanced sampling and provenance
-- `src/modeling/evaluate_model.py`: Comprehensive evaluation with ranking metrics and provenance
+- `src/modeling/evaluate_model.py`: Simplified evaluation interface using model metadata (only requires `--model-dir`)
 
 ### Automation Scripts
 - `scripts/run_ccdd_analysis.sh`: End-to-end graph processing and embedding generation
 - `scripts/train_ccdd_model.sh`: Model training pipeline
+- `regenerate_all.sh`: Complete pipeline including graph creation, embeddings, training, and evaluation
 
 ### Key Functions
 - `has_cd_edge()`: Detects Chemical-Disease edges for data leakage prevention

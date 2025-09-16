@@ -48,11 +48,11 @@ def extract_model_metadata(model_dir):
     input_data = provenance.get("input_data", {})
     
     # Infer graph directory from model directory path
-    # e.g., graphs/robokop_base/CCDD/models/model_2 -> graphs/robokop_base/CCDD
+    # New structure: graphs/robokop_base/CCDD/embeddings/embeddings_0/models/model_0 -> graphs/robokop_base/CCDD
     model_dir_parts = Path(model_dir).parts
-    if "models" in model_dir_parts:
-        models_index = model_dir_parts.index("models")
-        graph_dir = str(Path(*model_dir_parts[:models_index]))
+    if "models" in model_dir_parts and "embeddings" in model_dir_parts:
+        embeddings_index = model_dir_parts.index("embeddings")
+        graph_dir = str(Path(*model_dir_parts[:embeddings_index]))
     else:
         # Fallback: use the graph_dir from provenance if available
         graph_dir = input_data.get("graph_dir")
@@ -556,14 +556,14 @@ def create_precision_recall_curve(pr_curve_data, output_dir):
     plt.close()
 
 
-def evaluate_model_with_provenance(model_dir):
-    """Evaluate model with automatic versioning and provenance.
+def evaluate_model_simple(model_dir):
+    """Evaluate model and save metrics to model directory.
     
     Args:
-        model_dir: Path to model directory (e.g., graphs/robokop_base/CCDD/models/model_2)
+        model_dir: Path to model directory (e.g., graphs/.../embeddings/embeddings_0/models/model_0)
         
     Returns:
-        str: Path to the generated evaluation directory
+        str: Path to the evaluation metrics file
     """
     print(f"Evaluating model: {model_dir}")
     
@@ -571,36 +571,23 @@ def evaluate_model_with_provenance(model_dir):
     metadata = extract_model_metadata(model_dir)
     
     model_path = metadata["model_file"]
-    graph_dir = metadata["graph_dir"]
     ground_truth_file = metadata["ground_truth_file"]
-    embeddings_version = metadata["embeddings_version"]
     
-    print(f"Graph directory: {graph_dir}")
     print(f"Ground truth: {ground_truth_file}")
     print(f"Embeddings: {metadata['embeddings_file']}")
-    print(f"Negative sampling method: {metadata['provenance']['input_data'].get('negative_sampling_method', 'unknown')}")
+    
     # Validate model file
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
     
-    # Determine output directory structure - top-level evaluations directory
-    evaluations_base_dir = "evaluations"
-    os.makedirs(evaluations_base_dir, exist_ok=True)
+    # Output will go directly to the model directory
+    output_file = os.path.join(model_dir, "evaluation_metrics.json")
     
-    # Get next version number
-    version = get_next_evaluation_version(evaluations_base_dir)
-    version_dir = os.path.join(evaluations_base_dir, f"evaluation_{version}")
-    os.makedirs(version_dir, exist_ok=True)
-    
-    print(f"Running evaluation version {version}")
     print(f"Model: {model_path}")
-    print(f"Output: {version_dir}")
+    print(f"Output: {output_file}")
     
     # Record start time
     start_time = datetime.now()
-    
-    # Get model info for provenance
-    model_info = get_model_info(model_path)
     
     # Load the trained model
     with open(model_path, 'rb') as f:
@@ -608,15 +595,8 @@ def evaluate_model_with_provenance(model_dir):
     
     print(f"Loaded model from: {model_path}")
     
-    # Determine embeddings file
-    if embeddings_version:
-        embeddings_file = os.path.join(graph_dir, "embeddings", embeddings_version, "embeddings.emb")
-    else:
-        # Try embeddings_0 first, then fall back to direct embeddings.emb
-        embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings_0", "embeddings.emb")
-        if not os.path.exists(embeddings_file):
-            embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
-    
+    # Get embeddings file from metadata (models now know their embeddings)
+    embeddings_file = metadata["embeddings_file"]
     if not os.path.exists(embeddings_file):
         raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
     
@@ -629,146 +609,65 @@ def evaluate_model_with_provenance(model_dir):
     positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
     drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
     
-    # Need to determine negative_ratio from model provenance to recreate training set
-    negative_ratio = 1  # default
-    if "model_provenance" in model_info and "model_parameters" in model_info["model_provenance"]:
-        negative_ratio = model_info["model_provenance"]["model_parameters"].get("negative_ratio", 1)
+    # Get negative_ratio from model provenance
+    negative_ratio = metadata["provenance"]["model_parameters"]["negative_ratio"]
     
     print(f"Using negative_ratio={negative_ratio} from model provenance")
     print(f"Creating comprehensive evaluation on all drug-disease combinations...")
     print(f"Using {len(drug_ids)} drugs and {len(disease_ids)} diseases from ground truth")
     
     # Use shared evaluation logic
-    model_dir = os.path.dirname(model_path)
     eval_results = evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio, model_dir, original_gt_count, ground_truth_file)
     
     print(f"Generated {eval_results['all_combinations']:,} total drug-disease combinations")
     print(f"Training pairs to exclude: {eval_results['training_pairs_excluded']:,}")
     print(f"Evaluating on {eval_results['evaluation_combinations']:,} combinations")
     print(f"Evaluation set: {eval_results['evaluation_combinations']:,} combinations ({eval_results['evaluation_positives']:,} known positives)")
-    print(f"Test predictions: {len(eval_results['y_scores'])}")
-    print(f"Test positives: {eval_results['evaluation_positives']}")
-    print(f"Test negatives: {eval_results['evaluation_negatives']}")
-    
-    # Extract results from shared function
-    precision_at_k = eval_results['precision_at_k']
-    recall_at_k = eval_results['recall_at_k']
-    hits_at_k = eval_results['hits_at_k']
-    k_values = eval_results['k_values']
-    y_true = eval_results['y_true']
-    y_scores = eval_results['y_scores']
-    test_pairs = eval_results['test_pairs']
-    
-    # Create plots for single model
-    single_model_metrics = {
-        os.path.basename(model_path): {
-            'precision_at_k': precision_at_k,
-            'recall_at_k': recall_at_k,
-            'total_recall_at_k': eval_results['total_recall_at_k'],
-            'total_recall_max': eval_results['total_recall_max'],
-            'hits_at_k': hits_at_k,
-            'k_values': k_values
-        }
-    }
-    plot_ranking_metrics(single_model_metrics, version_dir)
-    
-    single_model_pr_data = {
-        os.path.basename(model_path): {
-            'y_true': y_true,
-            'y_scores': y_scores
-        }
-    }
-    create_precision_recall_curve(single_model_pr_data, version_dir)
     
     # Record end time
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
     
-    # Create comprehensive provenance metadata
-    provenance = {
+    # Create simple evaluation metrics
+    evaluation_metrics = {
         "timestamp": start_time.isoformat(),
         "duration_seconds": duration,
-        "script": "evaluate_model.py",
-        "version": f"evaluation_{version}",
-        "model_info": model_info,
-        "input_data": {
-            "graph_dir": graph_dir,
-            "embeddings_file": embeddings_file,
-            "embeddings_version": embeddings_version,
-            "ground_truth": ground_truth_stats
-        },
-        "evaluation_parameters": {
-            "k_values": k_values,
-            "negative_ratio_used": negative_ratio,
-            "test_size": 0.2,
-            "random_state": 42
-        },
-        "test_data_info": {
-            "total_evaluation_combinations": eval_results['all_combinations'],
-            "training_pairs_excluded": eval_results['training_pairs_excluded'], 
+        "model_dir": model_dir,
+        "embeddings_file": embeddings_file,
+        "ground_truth_file": ground_truth_file,
+        "evaluation_summary": {
+            "all_combinations": eval_results['all_combinations'],
+            "training_pairs_excluded": eval_results['training_pairs_excluded'],
             "evaluation_combinations": eval_results['evaluation_combinations'],
             "evaluation_positives": eval_results['evaluation_positives'],
-            "evaluation_negatives": eval_results['evaluation_negatives'],
-            "total_drugs": len(drug_ids),
-            "total_diseases": len(disease_ids)
+            "evaluation_negatives": eval_results['evaluation_negatives']
         },
-        "ranking_metrics": {
-            "precision_at_k": precision_at_k,
-            "recall_at_k": recall_at_k,
-            "hits_at_k": hits_at_k
-        },
-        "description": f"Model evaluation version {version} for {os.path.basename(model_path)}"
+        "precision_at_k": eval_results['precision_at_k'],
+        "recall_at_k": eval_results['recall_at_k'],
+        "total_recall_at_k": eval_results['total_recall_at_k'],
+        "total_recall_max": eval_results['total_recall_max'],
+        "hits_at_k": eval_results['hits_at_k'],
+        "k_values": eval_results['k_values']
     }
     
-    # Save provenance file
-    provenance_file = os.path.join(version_dir, "provenance.json")
-    with open(provenance_file, 'w') as f:
-        json.dump(provenance, f, indent=2)
-    
-    # Save detailed results
-    results = {
-        'precision_at_k': precision_at_k,
-        'recall_at_k': recall_at_k,
-        'hits_at_k': hits_at_k,
-        'k_values': k_values,
-        'total_evaluation_combinations': eval_results['all_combinations'],
-        'training_pairs_excluded': eval_results['training_pairs_excluded'],
-        'evaluation_combinations': eval_results['evaluation_combinations'], 
-        'evaluation_positives': eval_results['evaluation_positives'],
-        'evaluation_negatives': eval_results['evaluation_negatives'],
-        'total_drugs': len(drug_ids),
-        'total_diseases': len(disease_ids),
-        'negative_ratio_used': negative_ratio
-    }
-    
-    results_file = os.path.join(version_dir, "test_ranking_results.json")
-    with open(results_file, 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    # Save test set pairs for reference
-    test_pairs_file = os.path.join(version_dir, "test_pairs.json")
-    test_data = {
-        'test_pairs': test_pairs,
-        'test_scores': y_scores.tolist(),
-        'test_labels': y_true.tolist()
-    }
-    with open(test_pairs_file, 'w') as f:
-        json.dump(test_data, f, indent=2)
-    
-    print(f"Provenance saved: {provenance_file}")
-    print(f"Results saved: {results_file}")
-    print(f"Duration: {duration:.2f} seconds")
-    
-    # Print summary
-    print("\n=== Test Set Ranking Metrics Summary ===")
-    for k in [1, 5, 10, 20, 50, 100]:
-        if k in precision_at_k and not np.isnan(precision_at_k[k]):
-            print(f"K={k:3d}: Precision={precision_at_k[k]:.4f}, Recall={recall_at_k[k]:.4f}, Hits={hits_at_k[k]:.4f}")
+    # Save metrics to model directory
+    with open(output_file, 'w') as f:
+        json.dump(evaluation_metrics, f, indent=2)
     
     print(f"\nEvaluation complete!")
-    print(f"Output directory: {version_dir}")
+    print(f"Metrics saved to: {output_file}")
     
-    return version_dir
+    # Print summary
+    print("\n=== Ranking Metrics Summary ===")
+    for k in [1, 5, 10, 20, 50, 100]:
+        if k in eval_results['precision_at_k']:
+            precision = eval_results['precision_at_k'][k]
+            recall = eval_results['recall_at_k'][k]
+            hits = eval_results['hits_at_k'][k]
+            if not np.isnan(precision):
+                print(f"K={k:3d}: Precision={precision:.4f}, Recall={recall:.4f}, Hits={hits:.4f}")
+    
+    return output_file
 
 
 def evaluate_multiple_models_with_provenance(model_configs):
@@ -1010,58 +909,18 @@ def evaluate_multiple_models_with_provenance(model_configs):
 
 def main():
     """Command line interface."""
-    parser = argparse.ArgumentParser(description="Evaluate models with versioning and provenance")
+    parser = argparse.ArgumentParser(description="Evaluate single model and save metrics to model directory")
     
-    # Simplified single model evaluation
-    parser.add_argument("--model-dir", 
-                       help="Path to model directory (e.g., graphs/robokop_base/CCDD/models/model_2)")
-    
-    # Multi-model evaluation
-    parser.add_argument("--multi-model-config", 
-                       help="JSON file containing multiple model configurations")
-    parser.add_argument("--model-dirs", nargs="+",
-                       help="Multiple model directories for comparison")
-    parser.add_argument("--model-labels", nargs="+",
-                       help="Labels for the models (when using --model-dirs)")
+    # Single model evaluation only
+    parser.add_argument("--model-dir", required=True,
+                       help="Path to model directory (e.g., graphs/.../embeddings/embeddings_0/models/model_0)")
     
     args = parser.parse_args()
     
-    # Multi-model evaluation via config file
-    if args.multi_model_config:
-        with open(args.multi_model_config, 'r') as f:
-            model_configs = json.load(f)
-        
-        version_dir = evaluate_multiple_models_with_provenance(
-            model_configs=model_configs
-        )
+    # Single model evaluation - save to model directory
+    output_file = evaluate_model_simple(args.model_dir)
     
-    # Multi-model evaluation via command line args
-    elif args.model_dirs:
-        if not args.model_labels or len(args.model_labels) != len(args.model_dirs):
-            raise ValueError("Must provide same number of model labels as model directories")
-        
-        model_configs = []
-        for i, model_dir in enumerate(args.model_dirs):
-            model_configs.append({
-                'model_dir': model_dir,
-                'label': args.model_labels[i]
-            })
-        
-        version_dir = evaluate_multiple_models_with_provenance(
-            model_configs=model_configs
-        )
-    
-    # Single model evaluation
-    elif args.model_dir:
-        version_dir = evaluate_model_with_provenance(args.model_dir)
-    
-    else:
-        parser.error("Must provide either --model-dir for single model, "
-                    "or --multi-model-config for config file, "
-                    "or --model-dirs and --model-labels for multi-model evaluation")
-    
-    print(f"\nModel evaluation complete!")
-    print(f"Output directory: {version_dir}")
+    print(f"\nEvaluation complete! Metrics saved to: {output_file}")
 
 
 if __name__ == "__main__":
