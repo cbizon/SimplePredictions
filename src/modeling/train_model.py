@@ -336,14 +336,14 @@ def train_model(graph_dir,
     if not os.path.exists(embeddings_file):
         raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
     
-    # Determine output directory structure
-    base_dir = graph_dir  # e.g., graphs/robokop_base/CCDD
-    models_dir = os.path.join(base_dir, "models")
+    # Determine output directory structure - models now live under embeddings
+    embeddings_dir = os.path.dirname(embeddings_file)  # e.g., graphs/robokop_base/CCDD/embeddings/embeddings_0
+    models_dir = os.path.join(embeddings_dir, "models")
     
     # Create models directory if it doesn't exist
     os.makedirs(models_dir, exist_ok=True)
     
-    # Get next version number
+    # Get next version number (numbered per embedding version)
     version = get_next_model_version(models_dir)
     version_dir = os.path.join(models_dir, f"model_{version}")
     os.makedirs(version_dir, exist_ok=True)

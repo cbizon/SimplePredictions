@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimplePredictions Model Evaluation Viewer</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .models-section {
+            margin-bottom: 30px;
+        }
+        .models-hierarchy {
+            margin-bottom: 20px;
+        }
+        .graph-section {
+            margin-bottom: 30px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            background: #fafafa;
+        }
+        .graph-title {
+            margin: 0 0 10px 0;
+            color: #333;
+            font-size: 18px;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 8px;
+        }
+        .graph-description {
+            margin: 0 0 20px 0;
+            color: #666;
+            font-size: 13px;
+            font-style: italic;
+            line-height: 1.4;
+        }
+        .embedding-section {
+            margin-bottom: 20px;
+            padding-left: 20px;
+        }
+        .embedding-title {
+            margin: 0 0 15px 0;
+            color: #555;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .embedding-info {
+            font-size: 12px;
+            color: #777;
+            font-weight: normal;
+        }
+        .models-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+            margin-left: 20px;
+        }
+        .model-card {
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 15px;
+            background: #fafafa;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .model-card:hover {
+            border-color: #4CAF50;
+            background: #f0f8f0;
+        }
+        .model-card.selected {
+            border-color: #4CAF50;
+            background: #e8f5e8;
+        }
+        .model-title {
+            font-weight: bold;
+            font-size: 14px;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        .model-details {
+            font-size: 12px;
+            color: #666;
+            line-height: 1.4;
+        }
+        .model-meta {
+            font-size: 11px;
+            color: #888;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #ddd;
+        }
+        .controls {
+            text-align: center;
+            margin: 20px 0;
+        }
+        .btn {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+            transition: background 0.2s ease;
+        }
+        .btn:hover {
+            background: #45a049;
+        }
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background: #2196F3;
+        }
+        .btn-secondary:hover {
+            background: #1976D2;
+        }
+        .plot-container {
+            margin-top: 30px;
+            text-align: center;
+        }
+        .plot-container img {
+            max-width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+            color: #666;
+        }
+        .error {
+            color: #d32f2f;
+            text-align: center;
+            margin: 20px 0;
+            padding: 10px;
+            background: #ffebee;
+            border-radius: 4px;
+        }
+        .badge {
+            display: inline-block;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin-left: 8px;
+            font-weight: 500;
+        }
+        .badge.contra {
+            background: #FF9800;
+        }
+        .badge.random {
+            background: #2196F3;
+        }
+        .selection-info {
+            text-align: center;
+            margin: 15px 0;
+            padding: 10px;
+            background: #e3f2fd;
+            border-radius: 4px;
+            color: #1976d2;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SimplePredictions Model Evaluation Viewer</h1>
+        
+        <div class="models-section">
+            {% set total_models = namespace(count=0) %}
+            {% for graph_name in models_hierarchy %}
+                {% for embed_version in models_hierarchy[graph_name] %}
+                    {% for model_version in models_hierarchy[graph_name][embed_version] %}
+                        {% set total_models.count = total_models.count + 1 %}
+                    {% endfor %}
+                {% endfor %}
+            {% endfor %}
+            
+            <h2>Available Models ({{ total_models.count }} found)</h2>
+            <p>Select one or more models to compare their evaluation metrics. Models are organized by graph type → embeddings → model variants:</p>
+            
+            <div class="models-hierarchy">
+                {% for graph_name in models_hierarchy %}
+                <div class="graph-section">
+                    <h3 class="graph-title">📊 {{ graph_name }}</h3>
+                    {% set first_model_key = models_hierarchy[graph_name][models_hierarchy[graph_name].keys()|list|first].keys()|list|first %}
+                    {% set first_model = models_hierarchy[graph_name][models_hierarchy[graph_name].keys()|list|first][first_model_key] %}
+                    {% if first_model.graph_description %}
+                    <p class="graph-description">{{ first_model.graph_description }}</p>
+                    {% endif %}
+                    
+                    {% for embed_version in models_hierarchy[graph_name] %}
+                    <div class="embedding-section">
+                        {% set first_model = models_hierarchy[graph_name][embed_version][models_hierarchy[graph_name][embed_version].keys()|list|first] %}
+                        <h4 class="embedding-title">
+                            🔢 {{ embed_version }} 
+                            <span class="embedding-info">({{ first_model.embedding_dim }}D, p={{ first_model.embedding_params.p }}, q={{ first_model.embedding_params.q }})</span>
+                        </h4>
+                        
+                        <div class="models-grid">
+                            {% for model_version in models_hierarchy[graph_name][embed_version] %}
+                            {% set model = models_hierarchy[graph_name][embed_version][model_version] %}
+                            <div class="model-card" data-model-id="{{ model.id }}" onclick="toggleModel(this)">
+                                <div class="model-title">
+                                    🤖 {{ model_version }}
+                                    <span class="badge {{ 'contra' if model.has_contraindications else 'random' }}">
+                                        {{ model.negative_label }}
+                                    </span>
+                                </div>
+                                <div class="model-details">
+                                    <strong>Evaluation Positives:</strong> {{ "{:,}".format(model.evaluation_positives) }}<br>
+                                    <strong>Total Combinations:</strong> {{ "{:,}".format(model.total_combinations) }}<br>
+                                    <strong>Created:</strong> {{ model.timestamp[:19] }}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <div class="controls">
+            <div class="selection-info" id="selectionInfo" style="display: none;">
+                <span id="selectedCount">0</span> model(s) selected
+            </div>
+            
+            <button class="btn" id="generateBtn" onclick="generatePlots()" disabled>
+                Generate Comparison Plots
+            </button>
+            <button class="btn btn-secondary" onclick="clearSelection()">
+                Clear Selection
+            </button>
+        </div>
+        
+        <div class="loading" id="loading">
+            Generating plots... This may take a moment.
+        </div>
+        
+        <div class="error" id="error" style="display: none;"></div>
+        
+        <div class="plot-container" id="plotContainer" style="display: none;">
+            <h2>Evaluation Metrics Comparison</h2>
+            <p>4×2 grid showing: Precision@K, Recall@K, Total Recall@K, Hits@K vs K ranges (1-1000, 1-Max)</p>
+            <img id="plotImage" src="" alt="Evaluation plots">
+        </div>
+    </div>
+
+    <script>
+        let selectedModels = new Set();
+
+        function toggleModel(card) {
+            const modelId = card.dataset.modelId;
+            
+            if (selectedModels.has(modelId)) {
+                selectedModels.delete(modelId);
+                card.classList.remove('selected');
+            } else {
+                selectedModels.add(modelId);
+                card.classList.add('selected');
+            }
+            
+            updateControls();
+        }
+
+        function updateControls() {
+            const count = selectedModels.size;
+            const generateBtn = document.getElementById('generateBtn');
+            const selectionInfo = document.getElementById('selectionInfo');
+            const selectedCount = document.getElementById('selectedCount');
+            
+            selectedCount.textContent = count;
+            
+            if (count > 0) {
+                generateBtn.disabled = false;
+                selectionInfo.style.display = 'block';
+            } else {
+                generateBtn.disabled = true;
+                selectionInfo.style.display = 'none';
+            }
+        }
+
+        function clearSelection() {
+            selectedModels.clear();
+            document.querySelectorAll('.model-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+            updateControls();
+            hideError();
+            hidePlots();
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function showPlots(imageData) {
+            const plotContainer = document.getElementById('plotContainer');
+            const plotImage = document.getElementById('plotImage');
+            
+            plotImage.src = 'data:image/png;base64,' + imageData;
+            plotContainer.style.display = 'block';
+            
+            // Scroll to plots
+            plotContainer.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function hidePlots() {
+            document.getElementById('plotContainer').style.display = 'none';
+        }
+
+        async function generatePlots() {
+            if (selectedModels.size === 0) {
+                showError('Please select at least one model');
+                return;
+            }
+
+            hideError();
+            hidePlots();
+            showLoading();
+
+            try {
+                const response = await fetch('/generate_plots', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model_ids: Array.from(selectedModels)
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to generate plots');
+                }
+
+                showPlots(data.image);
+
+            } catch (error) {
+                showError('Error generating plots: ' + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+    </script>
+</body>
+</html>
