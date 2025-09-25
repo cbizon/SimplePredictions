@@ -171,33 +171,86 @@ def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, d
         training_pairs_to_exclude = set()
     
     # Remove training pairs from evaluation set
-    evaluation_combinations = [pair for pair in all_combinations if pair not in training_pairs_to_exclude]
-    
-    print(f"=== EVALUATION SET ===") 
-    print(f"All combinations: {len(all_combinations)}")
-    print(f"Training pairs to exclude: {len(training_pairs_to_exclude)}")
-    print(f"Evaluation combinations: {len(evaluation_combinations)}")
-    
-    # Create features for evaluation combinations - pad missing embeddings with zeros
-    # This ensures all models evaluate the same set of drug-disease pairs
-    eval_features, eval_pairs = create_feature_vectors(embeddings, evaluation_combinations, pad_missing=True)
-    
-    # Label evaluation combinations - only the test positives, not training positives
     evaluation_positives = set(positive_pairs) - set(training_positives)
-    y_true = np.array([1 if pair in evaluation_positives else 0 for pair in eval_pairs])
     
     print(f"=== EVALUATION SET ===") 
-    print(f"All combinations: {len(all_combinations)}")
-    print(f"Evaluation combinations: {len(evaluation_combinations)}")
-    print(f"Evaluation features created: {len(eval_features)}")
-    print(f"Evaluation pairs labeled as positive: {int(np.sum(y_true))}")
+    print(f"All combinations: {len(drug_ids) * len(disease_ids):,}")
+    print(f"Training pairs to exclude: {len(training_pairs_to_exclude)}")
     
-    # Max recall should now be 1.0 since we're only looking for test positives in the evaluation set
+    # Process in batches to avoid memory issues
+    batch_size = 50000  # Process 50K combinations at a time
+    total_combinations = len(drug_ids) * len(disease_ids)
+    
+    print(f"Processing {total_combinations:,} combinations in batches of {batch_size:,}")
+    
+    # Initialize arrays for results
+    y_scores = []
+    y_true = []
+    eval_pairs = []
+    
+    # Get embedding dimension and zero vector
+    embedding_dim = len(next(iter(embeddings.values())))
+    zero_embedding = np.zeros(embedding_dim)
+    
+    processed = 0
+    for i, drug_id in enumerate(drug_ids):
+        batch_pairs = []
+        batch_features = []
+        
+        # Collect pairs for this drug with all diseases
+        for disease_id in disease_ids:
+            pair = (drug_id, disease_id)
+            
+            # Skip training pairs
+            if pair in training_pairs_to_exclude:
+                continue
+                
+            batch_pairs.append(pair)
+            
+            # Create feature vector (pad missing with zeros)
+            drug_emb = embeddings.get(drug_id, zero_embedding)
+            disease_emb = embeddings.get(disease_id, zero_embedding)
+            combined_features = np.concatenate([drug_emb, disease_emb])
+            batch_features.append(combined_features)
+            
+            # Process batch when it reaches batch_size
+            if len(batch_pairs) >= batch_size:
+                batch_features_array = np.array(batch_features)
+                batch_scores = rf_model.predict_proba(batch_features_array)[:, 1]
+                batch_labels = [1 if pair in evaluation_positives else 0 for pair in batch_pairs]
+                
+                y_scores.extend(batch_scores)
+                y_true.extend(batch_labels)
+                eval_pairs.extend(batch_pairs)
+                
+                processed += len(batch_pairs)
+                print(f"Processed {processed:,}/{total_combinations:,} combinations ({processed/total_combinations*100:.1f}%)")
+                
+                # Reset batch
+                batch_pairs = []
+                batch_features = []
+        
+        # Process remaining pairs in final batch
+        if batch_pairs:
+            batch_features_array = np.array(batch_features)
+            batch_scores = rf_model.predict_proba(batch_features_array)[:, 1]
+            batch_labels = [1 if pair in evaluation_positives else 0 for pair in batch_pairs]
+            
+            y_scores.extend(batch_scores)
+            y_true.extend(batch_labels)
+            eval_pairs.extend(batch_pairs)
+            
+            processed += len(batch_pairs)
+    
+    # Convert to numpy arrays
+    y_scores = np.array(y_scores)
+    y_true = np.array(y_true)
+    
+    print(f"=== FINAL EVALUATION SET ===") 
+    print(f"Evaluation combinations processed: {len(eval_pairs):,}")
+    print(f"Evaluation pairs labeled as positive: {int(np.sum(y_true))}")
     print(f"Max possible recall: 1.0 (all evaluation positives should be findable)")
     print(f"Evaluation positives should equal remaining GT positives: {int(np.sum(y_true)) == len(evaluation_positives)}")
-    
-    # Generate predictions for ALL evaluation combinations  
-    y_scores = rf_model.predict_proba(eval_features)[:, 1]  # Probability of positive class
     
     # Define K values to evaluate - logarithmic spacing plus maximum
     max_k = len(y_scores)
@@ -229,11 +282,11 @@ def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, d
         'total_recall_max': total_recall_max,
         'hits_at_k': hits_at_k,
         'k_values': k_values,
-        'evaluation_combinations': len(evaluation_combinations),
+        'evaluation_combinations': len(eval_pairs),
         'evaluation_positives': int(np.sum(y_true)),
         'evaluation_negatives': int(len(y_true) - np.sum(y_true)),
         'training_pairs_excluded': len(training_pairs_to_exclude),
-        'all_combinations': len(all_combinations),
+        'all_combinations': len(drug_ids) * len(disease_ids),
         'y_true': y_true,
         'y_scores': y_scores,
         'test_pairs': eval_pairs

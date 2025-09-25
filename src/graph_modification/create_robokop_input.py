@@ -146,6 +146,21 @@ def keep_CGD_with_subclass(edge, typemap):
                 ("biolink:Gene", "biolink:DiseaseOrPhenotypicFeature")]
     return check_accepted(edge, typemap, accepted)
 
+def no_filter(edge, typemap):
+    # return True if you want to filter this edge out
+    # Keep all edges - no filtering applied
+    return False
+
+# Graph style descriptions for UI display
+GRAPH_DESCRIPTIONS = {
+    "no_filter": "Complete graph with all edges (no filtering applied).",
+    "original": "Original graph with subclass_of and CAID edges removed.",
+    "CCDD": "Chemical-Chemical and Disease-Disease edges (subclass_of edges removed).",
+    "CCDD_with_subclass": "Chemical-Chemical and Disease-Disease edges with subclass_of relationships.",
+    "CGD": "Chemical-Chemical, Disease-Disease, Chemical-Gene, and Gene-Disease edges (subclass_of edges removed).",
+    "CGD_with_subclass": "Chemical-Chemical, Disease-Disease, Chemical-Gene, and Gene-Disease edges with subclass_of relationships."
+}
+
 
 def pred_trans(edge, edge_map):
     edge_key = {"predicate": edge["predicate"]}
@@ -182,9 +197,12 @@ def create_robokop_input(input_base_dir,
         raise FileNotFoundError(f"Nodes file not found: {node_file}")
     if not os.path.exists(edges_file):
         raise FileNotFoundError(f"Edges file not found: {edges_file}")
-    outdir = f"{output_dir}/{os.path.basename(input_base_dir)}_{style}"
+    outdir = f"{output_dir}/{os.path.basename(input_base_dir.rstrip('/'))}_{style}"
     graph_dir = f"{outdir}/graph"
-    if style == "original":
+    if style == "no_filter":
+        # Keep all edges - no filtering applied
+        remove_edge = no_filter
+    elif style == "original":
         # This filters the edges by
         # 1) removing all subclass_of and
         # 2) removing all edges with a subject that starts with "CAID"
@@ -223,6 +241,8 @@ def create_robokop_input(input_base_dir,
         # Chemical-Chemical, Disease-Disease, Chemical-Gene, Gene-Disease AND subclass_of edges (CD filtered out)
         remove_edge = keep_CGD_with_subclass
     else:
+        if style not in GRAPH_DESCRIPTIONS:
+            raise ValueError(f"Unknown graph style '{style}'. Available styles: {list(GRAPH_DESCRIPTIONS.keys())}")
         print("I don't know what you mean")
         return
     if not os.path.exists(graph_dir):
@@ -233,6 +253,10 @@ def create_robokop_input(input_base_dir,
     
     # Write the filtered graph
     edge_count = write_pecanpy_input(edges_file, graph_dir, remove_edge, typemap)
+    
+    # Get description for this style
+    if style not in GRAPH_DESCRIPTIONS:
+        raise ValueError(f"No description available for graph style '{style}'. Please add to GRAPH_DESCRIPTIONS.")
     
     # Save provenance metadata
     provenance = {
@@ -247,7 +271,7 @@ def create_robokop_input(input_base_dir,
         "output_dir": output_dir,
         "edge_count": edge_count,
         "filter_function": remove_edge.__name__ if hasattr(remove_edge, '__name__') else str(remove_edge),
-        "description": f"Filtered {style} graph with data leakage prevention (CD edges removed)"
+        "description": GRAPH_DESCRIPTIONS[style]
     }
     
     provenance_file = os.path.join(graph_dir, "provenance.json")
@@ -306,7 +330,7 @@ def main():
     """Command line interface."""
     parser = argparse.ArgumentParser(description="Create filtered graph for link prediction")
     parser.add_argument("--style", default="CCDD", 
-                       choices=["original", "CGD", "CDD", "CCD", "CCDD", "CCGDD", "CGGD", "CCDD_with_subclass", "CGD_with_subclass"],
+                       choices=["no_filter", "original", "CGD", "CDD", "CCD", "CCDD", "CCGDD", "CGGD", "CCDD_with_subclass", "CGD_with_subclass"],
                        help="Graph filtering style (CD removed to prevent data leakage)")
     parser.add_argument("--input-dir", default="input_graphs/robokop_base_nonredundant",
                        help="Base directory containing input graph files")

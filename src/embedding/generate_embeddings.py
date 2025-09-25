@@ -201,8 +201,8 @@ def main():
                        help="Return parameter (default: 1)")
     parser.add_argument("--q", type=float, default=1,
                        help="In-out parameter (default: 1)")
-    parser.add_argument("--workers", type=int, default=4,
-                       help="Number of parallel workers (default: 4)")
+    parser.add_argument("--workers", type=int, default=8,
+                       help="Number of parallel workers (default: 8)")
     
     args = parser.parse_args()
     
