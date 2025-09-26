@@ -6,17 +6,32 @@ We are working on biomedical knowledge graphs.  Our goal is to be able to make g
 
 ## Basic Setup
 
-* github: This project has a github repo at https://github.com/cbizon/SimplePredictions
-* conda: we are using conda environment "simplepredictions" (located at /opt/anaconda3/envs/simplepredictions)
-* tests: we are using pytest, and want to maintain high code coverage
+* **github**: This project has a github repo at https://github.com/cbizon/SimplePredictions
+* **conda**: we are using conda environment "simplepredictions" (located at /opt/anaconda3/envs/simplepredictions)
+* **tests**: we are using pytest, and want to maintain high code coverage
+
+## Environment Setup
+
+```bash
+# Create and activate conda environment
+conda create -n simplepredictions python=3.11
+conda activate simplepredictions
+
+# Install core dependencies
+conda install scikit-learn pandas numpy matplotlib seaborn
+
+# Install specialized packages
+pip install pecanpy jsonlines flask
+```
 
 ## Key Dependencies
 
-* pecanpy: for node2vec embeddings  
-* scikit-learn: for Random Forest models
-* pandas, numpy: data processing
-* matplotlib, seaborn: plotting and visualization
-* jsonlines: for JSONL file processing
+* **pecanpy**: for node2vec embeddings  
+* **scikit-learn**: for Random Forest models
+* **pandas, numpy**: data processing
+* **matplotlib, seaborn**: plotting and visualization
+* **jsonlines**: for JSONL file processing
+* **flask**: for web application interface
 
 ## Basic Analysis Workflow
 
@@ -69,15 +84,29 @@ Note the subject/object/predicate structure. The subject and object are defined 
 /tests: pytests for checking the code.
 /scripts: scripts for controlling the process
 
-Note the new hierarchical structure: **models are now nested under embeddings**, so the path is `/graphs/{graphname}/embeddings/{embeddings_version}/models/{model_version}/`. Each model directory contains:
-- `rf_model.pkl`: The trained Random Forest model
-- `provenance.json`: Complete metadata including model parameters and training info
+## Directory Structure and Provenance
+
+**Hierarchical Organization**: Models are nested under embeddings at `/graphs/{graphname}/embeddings/{embeddings_version}/models/{model_version}/`
+
+**Graph Directory** (`/graphs/{graphname}/graph/`):
+- `edges.edg`: PecanPy format edge list 
+- `nodes.jsonl`: Node metadata (includes fake genes for CFD styles)
+- `provenance.json`: Graph creation metadata and parameters
+- `predicate_stats.json`: Predicate type counts sorted by frequency
+
+**Model Directory** (`/graphs/{graphname}/embeddings/{version}/models/{model_version}/`):
+- `rf_model.pkl`: Trained Random Forest model
+- `provenance.json`: Complete model metadata including parameters and training info
 - `training_pairs.json`: Exact training pairs used (for data leakage prevention)
-- `evaluation_metrics.json`: Evaluation results (created when evaluation is run)
+- `evaluation_metrics.json`: Comprehensive evaluation results
 - `results.json`: Basic training performance metrics
 - `classification_report.txt`: Detailed classification metrics
 
-Evaluations are now saved directly within each model directory as `evaluation_metrics.json`, eliminating the need for a separate `/evaluations` directory.
+**Provenance Tracking**: Every step saves complete metadata for reproducibility:
+- Graph filtering parameters and edge counts
+- Embedding generation parameters and node counts  
+- Model training parameters and data splits
+- Evaluation parameters and comprehensive metrics
 
 ## Analysis
 
@@ -91,9 +120,29 @@ We may change them but this is the default.
 
 **CRITICAL**: We want to be sure that the modeling does not suffer from data leakage. So in our graphs we want to remove all Chemical/DiseaseOrPhenotypicFeature edges during training. This is implemented in the `has_cd_edge()` function.
 
-Current graph types:
-- **CCDD**: Chemical-Chemical + Disease-Disease edges only (implemented)
-- **CGD**: Chemical-Gene-Disease edges (no direct CD) (planned)
+## Graph Types and Filtering Styles
+
+**Base Styles:**
+- **CCDD**: Chemical-Chemical + Disease-Disease edges only
+- **CGD**: Chemical-Gene-Disease pathways (no direct CD edges)  
+- **CCD**: Chemical-Chemical edges only
+- **CDD**: Disease-Disease edges only
+
+**Subclass Variants:**
+- **CCDD_with_subclass**: CCDD + biolink:subclass_of relationships
+- **CGD_with_subclass**: CGD + biolink:subclass_of relationships
+
+**Synthetic Fake Gene Styles (Upper Bounds):**
+- **CFD**: CCDD + synthetic fake genes connecting known indications
+- **CFD_with_subclass**: CFD + biolink:subclass_of relationships
+- **CFGD**: CGD + synthetic fake genes
+- **CFGD_with_subclass**: CFGD + biolink:subclass_of relationships
+
+**CFD Synthetic Pathways**: For each known drug-disease indication pair, creates:
+1. Unique fake gene: `FAKE:gene_for_{drug}_{disease}_{index}`
+2. CF edge: Chemical → Fake Gene (biolink:affects)
+3. FD edge: Fake Gene → Disease (biolink:contributes_to)
+4. Perfect synthetic pathway establishing performance upper bounds
 
 ## Ground Truth Data
 
@@ -146,34 +195,106 @@ CHEBI:8327,Polythiazide,MONDO:0002476,anuria,CHEBI:8327|MONDO:0002476,...
 - Shows realistic performance bounds given embedding coverage constraints
 - Theoretical maximum shown as dashed line on plots (e.g., ~0.11 for CCDD)
 
+## Web Application for Model Visualization
+
+The project includes a Flask web application (`app.py`) for interactive visualization and comparison of model evaluation results.
+
+### Project Structure - Webapp Components
+```
+├── app.py                     # Flask web application
+├── templates/
+│   └── index.html            # Web interface HTML template  
+├── run_app.sh                # Script to launch webapp
+└── graphs/                   # Models discovered automatically
+    └── **/evaluation_metrics.json  # Files webapp searches for
+```
+
+### Webapp Features
+
+**Automatic Model Discovery**: Recursively finds all models with `evaluation_metrics.json` files in the graphs/ directory and organizes them hierarchically by:
+- Graph type (e.g., robokop_base_nonredundant_CCDD)
+- Embedding version (e.g., embeddings_0)  
+- Model version (e.g., model_0)
+
+**Interactive Visualization**: Generates 4×2 grid of evaluation plots:
+- **Rows**: Precision@K, Recall@K, Total Recall@K, Hits@K
+- **Columns**: K range 1-1000 (zoomed view) and 1-Max (full range)
+- **Multiple model comparison** on same plots with different colors
+- **Model metadata** extracted from provenance files
+
+**Usage**:
+```bash
+# Launch webapp (use conda environment)
+./run_app.sh
+# Navigate to http://localhost:5000
+
+# Or run directly:
+python app.py
+```
+
 ## Key Scripts
 
-- `scripts/run_ccdd_analysis.sh`: Create CCDD graph and generate embeddings
-- `scripts/train_ccdd_model.sh`: Train Random Forest model  
-- `src/graph_modification/create_robokop_input.py`: Graph filtering with data leakage prevention
+**Core Pipeline**:
+- `src/graph_modification/create_robokop_input.py`: Graph filtering with data leakage prevention and predicate analysis
+- `src/embedding/generate_embeddings.py`: Node2vec embedding generation using PecanPy
 - `src/modeling/train_model.py`: Random Forest training with training pairs storage. Supports contraindications via `--contraindications` flag
 - `src/modeling/evaluate_model.py`: Simplified evaluation interface using model metadata. Only requires `--model-dir` argument
 
-## Usage Examples
+**Web Interface**:
+- `app.py`: Flask web application for interactive model visualization and comparison
+- `run_app.sh`: Script to launch webapp with conda environment
 
-**Training with random negatives:**
+## Step-by-Step Pipeline Usage
+
+### 1. Graph Creation
 ```bash
-python src/modeling/train_model.py --graph-dir graphs/robokop_base/CCDD --ground-truth "ground_truth/Indications List.csv"
+# Create CCDD graph (baseline)
+python src/graph_modification/create_robokop_input.py \
+    --style CCDD \
+    --input-dir input_graphs/robokop_base_nonredundant \
+    --output-dir graphs
+
+# Create CFD graph with synthetic fake genes (upper bounds)
+python src/graph_modification/create_robokop_input.py \
+    --style CFD \
+    --input-dir input_graphs/robokop_base_nonredundant \
+    --indications-file "ground_truth/Indications List.csv" \
+    --output-dir graphs
 ```
 
-**Training with contraindications as negatives:**
+### 2. Generate Embeddings
 ```bash
-python src/modeling/train_model.py --graph-dir graphs/robokop_base/CCDD --ground-truth "ground_truth/Indications List.csv" --contraindications "ground_truth/Contraindications List.csv"
+python src/embedding/generate_embeddings.py \
+    --graph-file graphs/robokop_base_nonredundant_CCDD/graph/edges.edg \
+    --dimensions 512 \
+    --walk-length 30 \
+    --num-walks 10 \
+    --window-size 10 \
+    --p 1 \
+    --q 1
 ```
 
-**Evaluation (simplified interface):**
+### 3. Train Models
 ```bash
-python src/modeling/evaluate_model.py --model-dir graphs/robokop_base_nonredundant_CCDD/embeddings/embeddings_0/models/model_0
+# Train with random negatives
+python src/modeling/train_model.py \
+    --graph-dir graphs/robokop_base_nonredundant_CCDD \
+    --ground-truth "ground_truth/Indications List.csv" \
+    --embeddings-version embeddings_0 \
+    --negative-ratio 1
+
+# Train with contraindications as negatives
+python src/modeling/train_model.py \
+    --graph-dir graphs/robokop_base_nonredundant_CCDD \
+    --ground-truth "ground_truth/Indications List.csv" \
+    --contraindications "ground_truth/Contraindications List.csv" \
+    --embeddings-version embeddings_0
 ```
 
-**Batch evaluation of all models:**
+### 4. Evaluate Models
 ```bash
-./regenerate_all.sh  # Runs evaluations for all existing models
+python src/modeling/evaluate_model.py \
+    --model-dir graphs/robokop_base_nonredundant_CCDD/embeddings/embeddings_0/models/model_0
 ```
 
 
