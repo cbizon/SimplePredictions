@@ -9,52 +9,118 @@ This project implements an end-to-end machine learning pipeline for predicting t
 ### Key Features
 
 - **Data Leakage Prevention**: Removes direct Chemical-Disease edges during training
-- **Graph Filtering**: Creates specialized graph views (CCDD: Chemical-Chemical + Disease-Disease)  
+- **Multiple Graph Styles**: CCDD, CGD, CFD (with synthetic fake genes) and subclass variants
+- **CFD Upper Bounds**: Synthetic fake genes create perfect pathways for performance limits
 - **Node2vec Embeddings**: Uses PecanPy for efficient node2vec implementation
+- **Comprehensive Provenance**: Complete metadata tracking for reproducibility
+- **Predicate Analysis**: Detailed statistics on relationship types in filtered graphs
 - **Ranking-based Evaluation**: Precision@K, Recall@K, Hits@K metrics for drug discovery
-- **Proper Train-Test Splitting**: Ensures evaluation on truly unseen data
+- **Memory-Optimized Evaluation**: Batch processing for large-scale evaluation
 
 ## Quick Start
 
 ### Prerequisites
 
-- Conda environment with Python 3.8+
-- Required packages: `pecanpy`, `scikit-learn`, `pandas`, `numpy`, `matplotlib`, `seaborn`, `jsonlines`
+- Conda environment with Python 3.11+
+- Access to biomedical knowledge graph data (RoboKOP format)
 
 ### Setup Environment
 
 ```bash
 # Create and activate conda environment
-conda create -n simplepredictions python=3.8
+conda create -n simplepredictions python=3.11
 conda activate simplepredictions
 
-# Install dependencies
+# Install core dependencies
 conda install scikit-learn pandas numpy matplotlib seaborn
-pip install pecanpy jsonlines
+
+# Install specialized packages
+pip install pecanpy jsonlines flask
 ```
 
-### Running the Pipeline
+### Step-by-Step Pipeline
 
-1. **Create CCDD Graph and Generate Embeddings**:
-   ```bash
-   ./scripts/run_ccdd_analysis.sh
-   ```
+The complete pipeline involves four main steps:
 
-2. **Train Random Forest Model**:
-   ```bash
-   ./scripts/train_ccdd_model.sh
-   ```
+#### 1. Graph Creation and Filtering
+```bash
+# Create CCDD graph (Chemical-Chemical + Disease-Disease edges only)
+python src/graph_modification/create_robokop_input.py \
+    --style CCDD \
+    --input-dir input_graphs/robokop_base_nonredundant \
+    --output-dir graphs
 
-3. **Evaluate Model** (new simplified interface):
-   ```bash
-   python src/modeling/evaluate_model.py \
-     --model-dir graphs/robokop_base_nonredundant_CCDD/embeddings/embeddings_0/models/model_0
-   ```
+# Or create CFD graph with synthetic fake genes for upper bounds
+python src/graph_modification/create_robokop_input.py \
+    --style CFD \
+    --input-dir input_graphs/robokop_base_nonredundant \
+    --indications-file "ground_truth/Indications List.csv" \
+    --output-dir graphs
+```
 
-4. **Run Full Pipeline** (create graphs, embeddings, models, and evaluations):
-   ```bash
-   ./regenerate_all.sh
-   ```
+#### 2. Generate Node2Vec Embeddings
+```bash
+# Generate 512-dimensional embeddings using PecanPy
+python src/embedding/generate_embeddings.py \
+    --graph-file graphs/robokop_base_nonredundant_CCDD/graph/edges.edg \
+    --dimensions 512 \
+    --walk-length 30 \
+    --num-walks 10 \
+    --window-size 10 \
+    --p 1 \
+    --q 1
+```
+
+#### 3. Train Random Forest Model
+```bash
+# Train with random negative sampling
+python src/modeling/train_model.py \
+    --graph-dir graphs/robokop_base_nonredundant_CCDD \
+    --ground-truth "ground_truth/Indications List.csv" \
+    --embeddings-version embeddings_0 \
+    --negative-ratio 1
+
+# Or train with contraindications as negatives
+python src/modeling/train_model.py \
+    --graph-dir graphs/robokop_base_nonredundant_CCDD \
+    --ground-truth "ground_truth/Indications List.csv" \
+    --contraindications "ground_truth/Contraindications List.csv" \
+    --embeddings-version embeddings_0
+```
+
+#### 4. Evaluate Model Performance
+```bash
+# Comprehensive ranking-based evaluation
+python src/modeling/evaluate_model.py \
+    --model-dir graphs/robokop_base_nonredundant_CCDD/embeddings/embeddings_0/models/model_0
+```
+
+### Web Interface for Model Visualization
+
+The project includes a Flask web application for interactive visualization and comparison of model evaluation results:
+
+```bash
+# Install Flask dependency
+pip install flask
+
+# Launch the web interface
+./run_app.sh
+# Or directly:
+python app.py
+```
+
+Then navigate to **http://localhost:5000** in your browser.
+
+#### Web Interface Features:
+- **Hierarchical Model Browser**: Organized by graph type → embedding version → model version
+- **Interactive Model Selection**: Choose multiple models for comparison
+- **Comprehensive Visualization**: 4×2 grid of evaluation plots:
+  - **Rows**: Precision@K, Recall@K, Total Recall@K, Hits@K
+  - **Columns**: K range 1-1000 (zoomed) and 1-Max (full range)
+- **Model Metadata Display**: Shows training parameters, embedding details, and provenance
+- **Automatic Discovery**: Finds all models with evaluation_metrics.json files
+
+The webapp automatically discovers all trained models in the graphs/ directory and provides an intuitive interface for comparing their performance across different metrics and K ranges.
 
 ## Project Structure
 
@@ -72,6 +138,10 @@ pip install pecanpy jsonlines
 ├── graphs/                    # Processed graph data
 │   └── {graphname}/           # e.g., robokop_base_nonredundant_CCDD
 │       ├── graph/             # Filtered edges and nodes
+│       │   ├── edges.edg      # PecanPy format edge list
+│       │   ├── nodes.jsonl    # Node metadata (includes fake genes for CFD)
+│       │   ├── provenance.json # Graph creation metadata
+│       │   └── predicate_stats.json # Predicate type counts and statistics
 │       └── embeddings/        # Node2vec embeddings
 │           └── embeddings_0/  # Versioned embedding runs
 │               ├── embeddings.emb      # Node2vec embedding vectors
@@ -89,7 +159,11 @@ pip install pecanpy jsonlines
 │   ├── embedding/             # Node2vec embedding generation
 │   ├── modeling/              # ML training and evaluation
 │   └── ...
-├── scripts/                   # Pipeline automation scripts
+├── app.py                     # Flask web application for model visualization
+├── templates/
+│   └── index.html             # Web interface for model comparison
+├── run_app.sh                 # Script to launch webapp
+├── scripts/                   # Pipeline automation scripts  
 └── tests/                     # Unit tests
 ```
 
@@ -116,21 +190,20 @@ You can specify different datasets using command line arguments.
 
 ### 1. Graph Processing
 - **Input**: Biomedical knowledge graph with nodes (drugs, diseases, genes) and edges (relationships)
-- **Filtering**: Creates CCDD graph containing only Chemical-Chemical and Disease-Disease edges
+- **Filtering**: Multiple graph styles available:
+  - **CCDD**: Chemical-Chemical + Disease-Disease edges only
+  - **CGD**: Chemical-Gene-Disease pathways (no direct CD edges)
+  - **CFD**: CCDD + synthetic fake genes connecting known indications (upper bounds)
+  - **Subclass variants**: Include biolink:subclass_of relationships
 - **Data Leakage Prevention**: Removes direct Drug-Disease edges to avoid training on target relationships
+- **Predicate Analysis**: Tracks and saves statistics on relationship types in filtered graphs
 
-**Command Line Usage:**
-```bash
-# Using default nonredundant dataset
-python src/graph_modification/create_robokop_input.py --style CCDD
-
-# Using original full dataset  
-python src/graph_modification/create_robokop_input.py \
-  --style CCDD \
-  --input-dir input_graphs/robokop_base \
-  --nodes-filename robokop_base_nodes.jsonl \
-  --edges-filename robokop_base_edges.jsonl
-```
+### 2. Synthetic Fake Genes (CFD Style)
+The CFD graph style creates "ideal" synthetic pathways to establish performance upper bounds:
+- Creates unique fake gene for each known drug-disease indication
+- Connects Chemical→FakeGene→Disease with perfect synthetic pathways
+- Only includes indications where both chemical and disease exist in original graph
+- Provides theoretical maximum performance achievable with available knowledge
 
 ### 2. Embedding Generation
 - Uses node2vec via PecanPy to generate 512-dimensional node embeddings
