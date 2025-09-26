@@ -146,6 +146,24 @@ def keep_CGD_with_subclass(edge, typemap):
                 ("biolink:Gene", "biolink:DiseaseOrPhenotypicFeature")]
     return check_accepted(edge, typemap, accepted)
 
+def keep_CCFD(edge, typemap):
+    # return True if you want to filter this edge out  
+    # Chemical-Chemical edges only, plus CF and FD fake gene edges (NO DD edges)
+    # This is for use with fake genes that provide the C-F-D pathways
+    if edge["predicate"] == "biolink:subclass_of":
+        return True
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity")]
+    return check_accepted(edge, typemap, accepted)
+
+def keep_CCFD_with_subclass(edge, typemap):
+    # return True if you want to filter this edge out  
+    # Chemical-Chemical edges with subclass relationships, plus CF and FD fake gene edges (NO DD edges)
+    # This is for use with fake genes that provide the C-F-D pathways
+    if edge["predicate"] == "biolink:subclass_of":
+        return False  # Keep subclass edges
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity")]
+    return check_accepted(edge, typemap, accepted)
+
 def no_filter(edge, typemap):
     # return True if you want to filter this edge out
     # Keep all edges - no filtering applied
@@ -259,7 +277,9 @@ GRAPH_DESCRIPTIONS = {
     "CFD": "Chemical-Chemical and Disease-Disease edges with synthetic fake genes connecting indication pairs (CCDD + fake genes).",
     "CFD_with_subclass": "Chemical-Chemical and Disease-Disease edges with synthetic fake genes and subclass relationships (CCDD_with_subclass + fake genes).",
     "CFGD": "Chemical-Gene-Disease graph with synthetic fake genes for indication pairs (CGD + fake genes).",
-    "CFGD_with_subclass": "Chemical-Gene-Disease graph with synthetic fake genes and subclass relationships (CGD_with_subclass + fake genes)."
+    "CFGD_with_subclass": "Chemical-Gene-Disease graph with synthetic fake genes and subclass relationships (CGD_with_subclass + fake genes).",
+    "CCFD": "Chemical-Chemical edges with synthetic fake genes connecting indication pairs (no Disease-Disease edges).",
+    "CCFD_with_subclass": "Chemical-Chemical edges with synthetic fake genes and subclass relationships (no Disease-Disease edges)."
 }
 
 
@@ -307,7 +327,7 @@ def create_robokop_input(input_base_dir,
     use_fake_genes = False
     base_filter = None
     
-    if style.startswith("CF"):
+    if style.startswith("CF") or style.startswith("CCFD"):
         use_fake_genes = True
         if style == "CFD":
             base_filter = keep_CCDD
@@ -317,8 +337,12 @@ def create_robokop_input(input_base_dir,
             base_filter = keep_CGD
         elif style == "CFGD_with_subclass":
             base_filter = keep_CGD_with_subclass
+        elif style == "CCFD":
+            base_filter = keep_CCFD
+        elif style == "CCFD_with_subclass":
+            base_filter = keep_CCFD_with_subclass
         else:
-            raise ValueError(f"Unknown fake gene style '{style}'. Available fake styles: CFD, CFD_with_subclass, CFGD, CFGD_with_subclass")
+            raise ValueError(f"Unknown fake gene style '{style}'. Available fake styles: CFD, CFD_with_subclass, CFGD, CFGD_with_subclass, CCFD, CCFD_with_subclass")
     else:
         # Regular filtering styles (existing logic)
         if style == "no_filter":
@@ -538,7 +562,7 @@ def main():
     parser.add_argument("--style", default="CCDD", 
                        choices=["no_filter", "original", "CGD", "CDD", "CCD", "CCDD", "CCGDD", "CGGD", 
                                "CCDD_with_subclass", "CGD_with_subclass", "CFD", "CFD_with_subclass", 
-                               "CFGD", "CFGD_with_subclass"],
+                               "CFGD", "CFGD_with_subclass", "CCFD", "CCFD_with_subclass"],
                        help="Graph filtering style (CD removed to prevent data leakage)")
     parser.add_argument("--input-dir", default="input_graphs/robokop_base_nonredundant",
                        help="Base directory containing input graph files")
