@@ -18,25 +18,60 @@ def remove_subclass_and_cid(edge, typemap):
         return True
     return False
 
-def has_cd_edge(edge, typemap):
-    """Check if edge is between Chemical and Disease (data leakage prevention)."""
+def has_cd_edge(edge, typemap, treats_only=False):
+    """Check if edge is between Chemical and Disease (data leakage prevention).
+
+    Args:
+        edge: The edge to check
+        typemap: Node type mapping
+        treats_only: If True, only return True for CD edges with treats predicates
+
+    Returns:
+        True if edge should be filtered out, False otherwise
+    """
     subj = edge["subject"]
     obj = edge["object"]
     subj_types = typemap.get(subj, set())
     obj_types = typemap.get(obj, set())
-    
+
     # Check if it's a Chemical-Disease edge in either direction
     if ("biolink:ChemicalEntity" in subj_types and "biolink:DiseaseOrPhenotypicFeature" in obj_types) or \
        ("biolink:DiseaseOrPhenotypicFeature" in subj_types and "biolink:ChemicalEntity" in obj_types):
+
+        # If treats_only, check if it's a treats predicate
+        if treats_only:
+            treats_predicates = {
+                "biolink:treats",
+                "biolink:applied_to_treat"
+            }
+            # Return True (filter) if it's NOT a treats predicate
+            return edge["predicate"] not in treats_predicates
+
         return True
     return False
 
 
-def check_accepted(edge, typemap, accepted):
-    # First check for data leakage - always filter out CD edges
-    if has_cd_edge(edge, typemap):
-        return True  # Filter out CD edges to prevent data leakage
-        
+def check_accepted(edge, typemap, accepted, cd_mode="filter_all"):
+    """Check if an edge should be filtered out based on accepted patterns.
+
+    Args:
+        edge: The edge to check
+        typemap: Node type mapping
+        accepted: List of accepted (type1, type2) patterns
+        cd_mode: How to handle CD edges - "filter_all" (default), "allow_all", or "allow_treats_only"
+
+    Returns:
+        True if edge should be filtered out, False if it should be kept
+    """
+    # Check for data leakage based on CD mode
+    if cd_mode == "filter_all":
+        if has_cd_edge(edge, typemap, treats_only=False):
+            return True  # Filter out all CD edges
+    elif cd_mode == "allow_treats_only":
+        if has_cd_edge(edge, typemap, treats_only=True):
+            return True  # Filter out non-treats CD edges
+    # elif cd_mode == "allow_all": don't filter any CD edges
+
     subj = edge["subject"]
     obj = edge["object"]
     subj_types = typemap.get(subj, set())
@@ -170,6 +205,124 @@ def no_filter(edge, typemap):
     return False
 
 
+def keep_CCDD_with_cd(edge, typemap):
+    """CCDD + CD edges (data leakage analysis).
+
+    Chemical-Chemical, Disease-Disease, AND Chemical-Disease edges.
+    Subclass edges are filtered out.
+    """
+    if edge["predicate"] == "biolink:subclass_of":
+        return True
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted, cd_mode="allow_all")
+
+
+def keep_CCDD_with_subclass_with_cd(edge, typemap):
+    """CCDD with subclass + CD edges (data leakage analysis).
+
+    Chemical-Chemical, Disease-Disease, Chemical-Disease, AND subclass_of edges.
+    """
+    if edge["predicate"] == "biolink:subclass_of":
+        return False  # Keep subclass edges
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted, cd_mode="allow_all")
+
+
+def keep_CGD_with_cd(edge, typemap):
+    """CGD + CD edges (data leakage analysis).
+
+    Chemical-Chemical, Disease-Disease, Chemical-Gene, Gene-Disease, AND Chemical-Disease edges.
+    Subclass edges are filtered out.
+    """
+    if edge["predicate"] == "biolink:subclass_of":
+        return True
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:Gene"),
+                ("biolink:Gene", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted, cd_mode="allow_all")
+
+
+def keep_CGD_with_subclass_with_cd(edge, typemap):
+    """CGD with subclass + CD edges (data leakage analysis).
+
+    Chemical-Chemical, Disease-Disease, Chemical-Gene, Gene-Disease, Chemical-Disease, AND subclass_of edges.
+    """
+    if edge["predicate"] == "biolink:subclass_of":
+        return False  # Keep subclass edges
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:Gene"),
+                ("biolink:Gene", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted, cd_mode="allow_all")
+
+
+def keep_CCDD_with_cd_treats(edge, typemap):
+    """CCDD + CD treats edges only (partial leakage analysis).
+
+    Chemical-Chemical, Disease-Disease, AND Chemical-Disease treats edges.
+    Non-treats CD edges are filtered out. Subclass edges are filtered out.
+    """
+    if edge["predicate"] == "biolink:subclass_of":
+        return True
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted, cd_mode="allow_treats_only")
+
+
+def keep_CCDD_with_subclass_with_cd_treats(edge, typemap):
+    """CCDD with subclass + CD treats edges only (partial leakage analysis).
+
+    Chemical-Chemical, Disease-Disease, Chemical-Disease treats edges, AND subclass_of edges.
+    Non-treats CD edges are filtered out.
+    """
+    if edge["predicate"] == "biolink:subclass_of":
+        return False  # Keep subclass edges
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted, cd_mode="allow_treats_only")
+
+
+def keep_CGD_with_cd_treats(edge, typemap):
+    """CGD + CD treats edges only (partial leakage analysis).
+
+    Chemical-Chemical, Disease-Disease, Chemical-Gene, Gene-Disease, AND Chemical-Disease treats edges.
+    Non-treats CD edges are filtered out. Subclass edges are filtered out.
+    """
+    if edge["predicate"] == "biolink:subclass_of":
+        return True
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:Gene"),
+                ("biolink:Gene", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted, cd_mode="allow_treats_only")
+
+
+def keep_CGD_with_subclass_with_cd_treats(edge, typemap):
+    """CGD with subclass + CD treats edges only (partial leakage analysis).
+
+    Chemical-Chemical, Disease-Disease, Chemical-Gene, Gene-Disease, Chemical-Disease treats edges, AND subclass_of edges.
+    Non-treats CD edges are filtered out.
+    """
+    if edge["predicate"] == "biolink:subclass_of":
+        return False  # Keep subclass edges
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:DiseaseOrPhenotypicFeature", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:Gene"),
+                ("biolink:Gene", "biolink:DiseaseOrPhenotypicFeature"),
+                ("biolink:ChemicalEntity", "biolink:DiseaseOrPhenotypicFeature")]
+    return check_accepted(edge, typemap, accepted, cd_mode="allow_treats_only")
+
+
 def load_indication_pairs(indications_file):
     """Load Chemical-Disease indication pairs from CSV file.
     
@@ -279,7 +432,15 @@ GRAPH_DESCRIPTIONS = {
     "CFGD": "Chemical-Gene-Disease graph with synthetic fake genes for indication pairs (CGD + fake genes).",
     "CFGD_with_subclass": "Chemical-Gene-Disease graph with synthetic fake genes and subclass relationships (CGD_with_subclass + fake genes).",
     "CCFD": "Chemical-Chemical edges with synthetic fake genes connecting indication pairs (no Disease-Disease edges).",
-    "CCFD_with_subclass": "Chemical-Chemical edges with synthetic fake genes and subclass relationships (no Disease-Disease edges)."
+    "CCFD_with_subclass": "Chemical-Chemical edges with synthetic fake genes and subclass relationships (no Disease-Disease edges).",
+    "CCDD_with_cd": "CCDD with Chemical-Disease edges included (data leakage analysis).",
+    "CCDD_with_subclass_with_cd": "CCDD with subclass and Chemical-Disease edges included (data leakage analysis).",
+    "CGD_with_cd": "CGD with Chemical-Disease edges included (data leakage analysis).",
+    "CGD_with_subclass_with_cd": "CGD with subclass and Chemical-Disease edges included (data leakage analysis).",
+    "CCDD_with_cd_treats": "CCDD with Chemical-Disease treats edges only (partial leakage analysis).",
+    "CCDD_with_subclass_with_cd_treats": "CCDD with subclass and Chemical-Disease treats edges only (partial leakage analysis).",
+    "CGD_with_cd_treats": "CGD with Chemical-Disease treats edges only (partial leakage analysis).",
+    "CGD_with_subclass_with_cd_treats": "CGD with subclass and Chemical-Disease treats edges only (partial leakage analysis)."
 }
 
 
@@ -365,6 +526,22 @@ def create_robokop_input(input_base_dir,
             base_filter = keep_CCDD_with_subclass
         elif style == "CGD_with_subclass":
             base_filter = keep_CGD_with_subclass
+        elif style == "CCDD_with_cd":
+            base_filter = keep_CCDD_with_cd
+        elif style == "CCDD_with_subclass_with_cd":
+            base_filter = keep_CCDD_with_subclass_with_cd
+        elif style == "CGD_with_cd":
+            base_filter = keep_CGD_with_cd
+        elif style == "CGD_with_subclass_with_cd":
+            base_filter = keep_CGD_with_subclass_with_cd
+        elif style == "CCDD_with_cd_treats":
+            base_filter = keep_CCDD_with_cd_treats
+        elif style == "CCDD_with_subclass_with_cd_treats":
+            base_filter = keep_CCDD_with_subclass_with_cd_treats
+        elif style == "CGD_with_cd_treats":
+            base_filter = keep_CGD_with_cd_treats
+        elif style == "CGD_with_subclass_with_cd_treats":
+            base_filter = keep_CGD_with_subclass_with_cd_treats
         else:
             if style not in GRAPH_DESCRIPTIONS:
                 raise ValueError(f"Unknown graph style '{style}'. Available styles: {list(GRAPH_DESCRIPTIONS.keys())}")
@@ -559,11 +736,14 @@ def write_pecanpy_input_with_fake_genes(edges_file, output_dir, filter_func, typ
 def main():
     """Command line interface."""
     parser = argparse.ArgumentParser(description="Create filtered graph for link prediction")
-    parser.add_argument("--style", default="CCDD", 
-                       choices=["no_filter", "original", "CGD", "CDD", "CCD", "CCDD", "CCGDD", "CGGD", 
-                               "CCDD_with_subclass", "CGD_with_subclass", "CFD", "CFD_with_subclass", 
-                               "CFGD", "CFGD_with_subclass", "CCFD", "CCFD_with_subclass"],
-                       help="Graph filtering style (CD removed to prevent data leakage)")
+    parser.add_argument("--style", default="CCDD",
+                       choices=["no_filter", "original", "CGD", "CDD", "CCD", "CCDD", "CCGDD", "CGGD",
+                               "CCDD_with_subclass", "CGD_with_subclass", "CFD", "CFD_with_subclass",
+                               "CFGD", "CFGD_with_subclass", "CCFD", "CCFD_with_subclass",
+                               "CCDD_with_cd", "CCDD_with_subclass_with_cd", "CGD_with_cd", "CGD_with_subclass_with_cd",
+                               "CCDD_with_cd_treats", "CCDD_with_subclass_with_cd_treats",
+                               "CGD_with_cd_treats", "CGD_with_subclass_with_cd_treats"],
+                       help="Graph filtering style (CD removed to prevent data leakage, except _with_cd variants)")
     parser.add_argument("--input-dir", default="input_graphs/robokop_base_nonredundant",
                        help="Base directory containing input graph files")
     parser.add_argument("--nodes-filename", default="nodes.jsonl",

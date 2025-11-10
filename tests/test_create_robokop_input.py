@@ -7,8 +7,11 @@ import json
 from pathlib import Path
 
 from src.graph_modification.create_robokop_input import (
-    keep_CCDD, keep_CGD, load_typemap, write_pecanpy_input, 
-    check_accepted, remove_subclass_and_cid, has_cd_edge, create_robokop_input
+    keep_CCDD, keep_CGD, load_typemap, write_pecanpy_input,
+    check_accepted, remove_subclass_and_cid, has_cd_edge, create_robokop_input,
+    keep_CCDD_with_cd, keep_CCDD_with_subclass_with_cd,
+    keep_CGD_with_cd, keep_CGD_with_subclass_with_cd,
+    check_accepted_with_cd
 )
 
 
@@ -222,20 +225,21 @@ def test_write_pecanpy_input(temp_edges_file, sample_nodes):
     typemap = {}
     for node in sample_nodes:
         typemap[node["id"]] = set(node["category"])
-    
+
     with tempfile.TemporaryDirectory() as temp_dir:
-        edge_count = write_pecanpy_input(temp_edges_file, temp_dir, keep_CCDD, typemap)
-        
+        edge_count, predicate_stats = write_pecanpy_input(temp_edges_file, temp_dir, keep_CCDD, typemap)
+
         output_file = os.path.join(temp_dir, "edges.edg")
         assert os.path.exists(output_file)
-        
+
         with open(output_file, 'r') as f:
             lines = f.readlines()
-        
+
         # Should have no edges since sample_edges doesn't have CC or DD edges
         # and CD edges are filtered out for data leakage prevention
         assert len(lines) == 0
         assert edge_count == 0
+        assert predicate_stats == {}
 
 
 def test_write_pecanpy_input_file_format():
@@ -260,13 +264,14 @@ def test_write_pecanpy_input_file_format():
     
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            edge_count = write_pecanpy_input(temp_edges_file, temp_dir, keep_CCDD, typemap)
-            
+            edge_count, predicate_stats = write_pecanpy_input(temp_edges_file, temp_dir, keep_CCDD, typemap)
+
             output_file = os.path.join(temp_dir, "edges.edg")
-            
+
             with open(output_file, 'r') as f:
                 lines = list(f)
                 assert edge_count == len(lines), f"Edge count {edge_count} doesn't match file lines {len(lines)}"
+                assert predicate_stats == {"biolink:interacts_with": 1}
                 for line in lines:
                     # Each line should be tab-separated with 2 fields
                     parts = line.strip().split('\t')
@@ -333,7 +338,122 @@ def test_create_robokop_input_new_interface():
             provenance = json.load(f)
             assert provenance["style"] == "CCDD"
             assert provenance["edge_count"] == 1
-            assert provenance["nodes_filename"] == "test_nodes.jsonl" 
+            assert provenance["nodes_filename"] == "test_nodes.jsonl"
             assert provenance["edges_filename"] == "test_edges.jsonl"
             assert "timestamp" in provenance
             assert "script" in provenance
+
+
+def test_check_accepted_with_cd():
+    """Test check_accepted_with_cd allows CD edges (data leakage analysis)."""
+    typemap = {
+        "CHEBI:123": {"biolink:ChemicalEntity"},
+        "MONDO:456": {"biolink:DiseaseOrPhenotypicFeature"},
+        "CHEBI:456": {"biolink:ChemicalEntity"}
+    }
+
+    accepted = [("biolink:ChemicalEntity", "biolink:ChemicalEntity"),
+                ("biolink:ChemicalEntity", "biolink:DiseaseOrPhenotypicFeature")]
+
+    # Should KEEP CD edges (no leakage prevention)
+    cd_edge = {"subject": "CHEBI:123", "object": "MONDO:456"}
+    assert check_accepted_with_cd(cd_edge, typemap, accepted) == False
+
+    # Should keep chemical-chemical edge
+    cc_edge = {"subject": "CHEBI:123", "object": "CHEBI:456"}
+    assert check_accepted_with_cd(cc_edge, typemap, accepted) == False
+
+    # Should filter chemical-gene edge (not in accepted list)
+    typemap["HGNC:789"] = {"biolink:Gene"}
+    cg_edge = {"subject": "CHEBI:123", "object": "HGNC:789"}
+    assert check_accepted_with_cd(cg_edge, typemap, accepted) == True
+
+
+def test_keep_CCDD_with_cd():
+    """Test CCDD_with_cd filtering includes CD edges."""
+    typemap = {
+        "CHEBI:123": {"biolink:ChemicalEntity"},
+        "CHEBI:456": {"biolink:ChemicalEntity"},
+        "MONDO:456": {"biolink:DiseaseOrPhenotypicFeature"},
+        "MONDO:789": {"biolink:DiseaseOrPhenotypicFeature"},
+        "HGNC:789": {"biolink:Gene"}
+    }
+
+    # Should filter subclass edges
+    subclass_edge = {"predicate": "biolink:subclass_of", "subject": "A", "object": "B"}
+    assert keep_CCDD_with_cd(subclass_edge, typemap) == True
+
+    # Should KEEP chemical-disease edges (data leakage variant)
+    cd_edge = {"predicate": "biolink:treats", "subject": "CHEBI:123", "object": "MONDO:456"}
+    assert keep_CCDD_with_cd(cd_edge, typemap) == False
+
+    # Should keep chemical-chemical edges
+    cc_edge = {"predicate": "biolink:interacts_with", "subject": "CHEBI:123", "object": "CHEBI:456"}
+    assert keep_CCDD_with_cd(cc_edge, typemap) == False
+
+    # Should keep disease-disease edges
+    dd_edge = {"predicate": "biolink:associated_with", "subject": "MONDO:456", "object": "MONDO:789"}
+    assert keep_CCDD_with_cd(dd_edge, typemap) == False
+
+    # Should filter chemical-gene edges
+    cg_edge = {"predicate": "biolink:affects", "subject": "CHEBI:123", "object": "HGNC:789"}
+    assert keep_CCDD_with_cd(cg_edge, typemap) == True
+
+
+def test_keep_CCDD_with_subclass_with_cd():
+    """Test CCDD_with_subclass_with_cd includes both subclass and CD edges."""
+    typemap = {
+        "CHEBI:123": {"biolink:ChemicalEntity"},
+        "MONDO:456": {"biolink:DiseaseOrPhenotypicFeature"},
+        "MONDO:789": {"biolink:DiseaseOrPhenotypicFeature"}
+    }
+
+    # Should KEEP subclass edges
+    subclass_edge = {"predicate": "biolink:subclass_of", "subject": "MONDO:456", "object": "MONDO:789"}
+    assert keep_CCDD_with_subclass_with_cd(subclass_edge, typemap) == False
+
+    # Should KEEP chemical-disease edges (data leakage variant)
+    cd_edge = {"predicate": "biolink:treats", "subject": "CHEBI:123", "object": "MONDO:456"}
+    assert keep_CCDD_with_subclass_with_cd(cd_edge, typemap) == False
+
+
+def test_keep_CGD_with_cd():
+    """Test CGD_with_cd filtering includes CD edges."""
+    typemap = {
+        "CHEBI:123": {"biolink:ChemicalEntity"},
+        "MONDO:456": {"biolink:DiseaseOrPhenotypicFeature"},
+        "HGNC:789": {"biolink:Gene"}
+    }
+
+    # Should filter subclass edges
+    subclass_edge = {"predicate": "biolink:subclass_of", "subject": "A", "object": "B"}
+    assert keep_CGD_with_cd(subclass_edge, typemap) == True
+
+    # Should KEEP chemical-disease edges (data leakage variant)
+    cd_edge = {"predicate": "biolink:treats", "subject": "CHEBI:123", "object": "MONDO:456"}
+    assert keep_CGD_with_cd(cd_edge, typemap) == False
+
+    # Should keep chemical-gene edges
+    cg_edge = {"predicate": "biolink:affects", "subject": "CHEBI:123", "object": "HGNC:789"}
+    assert keep_CGD_with_cd(cg_edge, typemap) == False
+
+    # Should keep gene-disease edges
+    gd_edge = {"predicate": "biolink:associated_with", "subject": "HGNC:789", "object": "MONDO:456"}
+    assert keep_CGD_with_cd(gd_edge, typemap) == False
+
+
+def test_keep_CGD_with_subclass_with_cd():
+    """Test CGD_with_subclass_with_cd includes subclass and CD edges."""
+    typemap = {
+        "CHEBI:123": {"biolink:ChemicalEntity"},
+        "MONDO:456": {"biolink:DiseaseOrPhenotypicFeature"},
+        "HGNC:789": {"biolink:Gene"}
+    }
+
+    # Should KEEP subclass edges
+    subclass_edge = {"predicate": "biolink:subclass_of", "subject": "A", "object": "B"}
+    assert keep_CGD_with_subclass_with_cd(subclass_edge, typemap) == False
+
+    # Should KEEP chemical-disease edges (data leakage variant)
+    cd_edge = {"predicate": "biolink:treats", "subject": "CHEBI:123", "object": "MONDO:456"}
+    assert keep_CGD_with_subclass_with_cd(cd_edge, typemap) == False
