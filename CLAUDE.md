@@ -21,13 +21,14 @@ conda activate simplepredictions
 conda install scikit-learn pandas numpy matplotlib seaborn
 
 # Install specialized packages
-pip install pecanpy jsonlines flask
+pip install pecanpy jsonlines flask shap
 ```
 
 ## Key Dependencies
 
-* **pecanpy**: for node2vec embeddings  
+* **pecanpy**: for node2vec embeddings
 * **scikit-learn**: for Random Forest models
+* **shap**: for SHAP (SHapley Additive exPlanations) feature importance analysis
 * **pandas, numpy**: data processing
 * **matplotlib, seaborn**: plotting and visualization
 * **jsonlines**: for JSONL file processing
@@ -88,9 +89,10 @@ Note the subject/object/predicate structure. The subject and object are defined 
 
 **Hierarchical Organization**: Models are nested under embeddings at `/graphs/{graphname}/embeddings/{embeddings_version}/models/{model_version}/`
 
-**Graph Directory** (`/graphs/{graphname}/graph/`):
-- `edges.edg`: PecanPy format edge list 
-- `nodes.jsonl`: Node metadata (includes fake genes for CFD styles)
+**Graph Directory** (`/graphs/{graphname}/graph/` for PecanPy/HGT formats, `/input_graphs/{graphname}/` for KGX format):
+- **PecanPy format** (default): `edges.edg` (tab-delimited subject/object pairs)
+- **HGT format**: `edges.tsv` and `nodes.tsv` (TSV with pseudo-predicates from qualifiers)
+- **KGX format**: `edges.jsonl` and `nodes.jsonl` (original KGX JSONL format preserved, no reformatting)
 - `provenance.json`: Graph creation metadata and parameters
 - `predicate_stats.json`: Predicate type counts sorted by frequency
 
@@ -115,6 +117,31 @@ Information about pecanpy can be found at https://github.com/krishnanlab/PecanPy
 
 Our base parameters for pecanpy are: --dimensions 512 --walk-length 30 --num-walks 10 --window-size 10 --p 1 --q 1
 We may change them but this is the default.
+
+### Embedding Storage Format
+
+**Format**: Node embeddings are stored in compressed NumPy `.npz` format (not text `.emb`).
+
+**Benefits**:
+- **68% space savings** compared to text format (18GB → 5.8GB per large file)
+- **Faster loading** - binary format loads much quicker than parsing text
+- **Type-safe** - Uses float32 precision which is sufficient for embeddings
+
+**Automatic Conversion**: `generate_embeddings.py` automatically converts PecanPy's text output to `.npz` and removes the `.emb` file.
+
+**Loading**: `load_embeddings()` in `train_model.py` automatically prefers `.npz` format and falls back to `.emb` if needed.
+
+**Manual Conversion**: Use `scripts/convert_emb_to_npz.py` to convert existing `.emb` files:
+```bash
+# Convert single file
+python scripts/convert_emb_to_npz.py path/to/embeddings.emb
+
+# Convert all .emb files in graphs/ directory
+python scripts/convert_emb_to_npz.py --all
+
+# Keep original .emb file after conversion
+python scripts/convert_emb_to_npz.py --all --keep-original
+```
 
 ## Data Leakage Prevention
 
@@ -180,20 +207,67 @@ CHEBI:8327,Polythiazide,MONDO:0002476,anuria,CHEBI:8327|MONDO:0002476,...
 
 **Evaluation Set Construction**:
 - Generate ALL possible drug-disease combinations from ground truth universe
-- Exclude training pairs (both positive and negative) 
+- Exclude training pairs (both positive and negative)
 - Use zero-padding for missing embeddings to ensure consistent evaluation across models
 - Evaluate on ~1M combinations per model with logarithmic K sampling
 
 **Metrics Calculated**:
-- **Precision@K**: Accuracy of top K predictions  
+- **Precision@K**: Accuracy of top K predictions
 - **Recall@K**: Fraction of test positives found in top K (max = 1.0)
 - **Total Recall@K**: Fraction of all discoverable indications found (accounts for embedding coverage limits)
 - **Hits@K**: Fraction of diseases with at least one hit in top K
 
-**Total Recall Context**: 
+**Total Recall Context**:
 - Denominator = Original indications - Training positives used
 - Shows realistic performance bounds given embedding coverage constraints
 - Theoretical maximum shown as dashed line on plots (e.g., ~0.11 for CCDD)
+
+## SHAP Analysis for Feature Interpretation
+
+**Overview**: SHAP (SHapley Additive exPlanations) analysis explains individual predictions by computing feature importance values for top-K **true positive** predictions.
+
+**Integration**:
+- `src/modeling/shap_analysis.py`: Core SHAP computation module
+- `--shap-top-k` parameter in `evaluate_model.py`: Configurable number of true positive predictions to analyze
+- Output saved as `shap_top_{k}.json` in model directory (overwrites any existing file)
+
+**True Positive Filtering**:
+- Analyzes only **known true indications** from the evaluation set
+- Selects top-K true positives ranked by prediction score
+- Useful for understanding which features drive correct predictions
+
+**Output Format**:
+- **Sorted by absolute SHAP value**: Features ordered by importance (descending)
+- **Zero values filtered**: Only non-zero contributions included (threshold: 1e-10)
+- **Separate drug/disease analysis**: Features split back into drug and disease embeddings
+- **Top features highlighted**: Top 10 most important features per category
+
+**Usage**:
+```bash
+# Generate SHAP analysis for top 10 true positive predictions
+python src/modeling/evaluate_model.py \
+    --model-dir graphs/.../models/model_0 \
+    --shap-top-k 10
+```
+
+**Analysis with SAE Features**:
+When using SAE (Sparse Autoencoder) embeddings with biological interpretations:
+```bash
+# Analyze SHAP results with biological feature mappings
+python scripts/analyze_shap_with_sae.py \
+    --shap-file graphs/.../shap_top_10.json \
+    --sae-features sae_feature_mappings.json \
+    --top-n 5
+```
+
+**SAE Feature Mapping Format**:
+```json
+{
+  "drug_emb_18": "Cardiovascular activity pathway",
+  "disease_emb_167": "Metabolic syndrome cluster",
+  ...
+}
+```
 
 ## Web Application for Model Visualization
 
@@ -226,7 +300,7 @@ The project includes a Flask web application (`app.py`) for interactive visualiz
 ```bash
 # Launch webapp (use conda environment)
 ./run_app.sh
-# Navigate to http://localhost:5000
+# Navigate to http://localhost:5001
 
 # Or run directly:
 python app.py
@@ -235,7 +309,7 @@ python app.py
 ## Key Scripts
 
 **Core Pipeline**:
-- `src/graph_modification/create_robokop_input.py`: Graph filtering with data leakage prevention and predicate analysis
+- `src/graph_modification/create_robokop_input.py`: Graph filtering with data leakage prevention and predicate analysis. Supports multiple output formats: `pecanpy` (default), `hgt`, or `kgx`
 - `src/embedding/generate_embeddings.py`: Node2vec embedding generation using PecanPy
 - `src/modeling/train_model.py`: Random Forest training with training pairs storage. Supports contraindications via `--contraindications` flag
 - `src/modeling/evaluate_model.py`: Simplified evaluation interface using model metadata. Only requires `--model-dir` argument
@@ -247,12 +321,24 @@ python app.py
 ## Step-by-Step Pipeline Usage
 
 ### 1. Graph Creation
+
+**Output Format Options**:
+- `--output-format pecanpy` (default): Creates `.edg` files in `graphs/{name}/graph/` (for node2vec embeddings)
+- `--output-format hgt`: Creates `.tsv` files in `graphs/{name}/graph/` (for heterogeneous graph transformers)
+- `--output-format kgx`: Creates `.jsonl` files in `input_graphs/{name}/` (preserves original KGX format)
+
 ```bash
-# Create CCDD graph (baseline)
+# Create CCDD graph (baseline) - PecanPy format (default)
 python src/graph_modification/create_robokop_input.py \
     --style CCDD \
     --input-dir input_graphs/robokop_base_nonredundant \
     --output-dir graphs
+
+# Create multi_filter_1 graph in KGX format (writes to input_graphs/)
+python src/graph_modification/create_robokop_input.py \
+    --style multi_filter_1 \
+    --input-dir input_graphs/robokop_base_nonredundant \
+    --output-format kgx
 
 # Create CFD graph with synthetic fake genes (upper bounds)
 python src/graph_modification/create_robokop_input.py \

@@ -47,61 +47,64 @@ def get_next_model_version(models_dir):
 
 
 def get_embedding_info(embeddings_file):
-    """Extract embedding metadata from file.
-    
+    """Extract embedding metadata from .npz file.
+
     Args:
-        embeddings_file: Path to embeddings file
-        
+        embeddings_file: Path to embeddings.npz file
+
     Returns:
         dict: Embedding info including dimensions and count
     """
     if not os.path.exists(embeddings_file):
         return {"error": f"Embeddings file not found: {embeddings_file}"}
-    
-    with open(embeddings_file, 'r') as f:
-        header = f.readline().strip().split()
-        num_nodes, embedding_dim = int(header[0]), int(header[1])
-    
+
+    # Load metadata from .npz file
+    data = np.load(embeddings_file)
+    num_nodes = int(data['num_nodes'])
+    embedding_dim = int(data['embedding_dim'])
+
     # Try to get provenance info if available
     embedding_dir = os.path.dirname(embeddings_file)
     provenance_file = os.path.join(embedding_dir, "provenance.json")
-    
+
     embedding_info = {
         "embeddings_file": embeddings_file,
         "num_nodes": num_nodes,
         "embedding_dim": embedding_dim
     }
-    
+
     if os.path.exists(provenance_file):
         with open(provenance_file, 'r') as f:
             embedding_provenance = json.load(f)
             embedding_info["embedding_provenance"] = embedding_provenance
-    
+
     return embedding_info
 
 
 def load_embeddings(embeddings_file):
-    """Load node embeddings from file.
-    
+    """Load node embeddings from .npz file.
+
     Args:
-        embeddings_file: Path to embeddings.emb file
-        
+        embeddings_file: Path to embeddings.npz file
+
     Returns:
         dict: Mapping from node_id to embedding vector
     """
-    embeddings = {}
-    with open(embeddings_file, 'r') as f:
-        # Skip first line (header with num_nodes, embedding_dim)
-        header = f.readline().strip().split()
-        num_nodes, embedding_dim = int(header[0]), int(header[1])
-        
-        for line in f:
-            parts = line.strip().split()
-            node_id = parts[0]
-            embedding = np.array([float(x) for x in parts[1:]])
-            embeddings[node_id] = embedding
-    
-    print(f"Loaded {len(embeddings)} embeddings with dimension {embedding_dim}")
+    embeddings_path = Path(embeddings_file)
+
+    if not embeddings_path.exists():
+        raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
+
+    # Load from compressed NumPy format
+    data = np.load(embeddings_path)
+    node_ids = data['node_ids']
+    embeddings_array = data['embeddings']
+    embedding_dim = int(data['embedding_dim'])
+
+    # Convert to dictionary
+    embeddings = {node_id: embeddings_array[i] for i, node_id in enumerate(node_ids)}
+
+    print(f"Loaded {len(embeddings)} embeddings with dimension {embedding_dim} from {embeddings_path.name}")
     return embeddings
 
 
@@ -326,13 +329,13 @@ def train_model(graph_dir,
     Returns:
         str: Path to the generated model directory
     """
-    # Determine embeddings file
+    # Determine embeddings file (.npz format)
     if embeddings_version:
-        embeddings_file = os.path.join(graph_dir, "embeddings", embeddings_version, "embeddings.emb")
+        embeddings_file = os.path.join(graph_dir, "embeddings", embeddings_version, "embeddings.npz")
     else:
-        # Use the default embeddings.emb file
-        embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
-    
+        # Use the default embeddings.npz file
+        embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.npz")
+
     if not os.path.exists(embeddings_file):
         raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
     

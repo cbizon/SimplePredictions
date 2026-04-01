@@ -8,6 +8,7 @@ import os
 import argparse
 import subprocess
 import json
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 
@@ -38,16 +39,16 @@ def get_next_embedding_version(embeddings_dir):
 
 def count_edges_and_nodes(graph_file):
     """Count edges and unique nodes in the graph file.
-    
+
     Args:
         graph_file: Path to .edg file
-        
+
     Returns:
         tuple: (edge_count, node_count)
     """
     nodes = set()
     edge_count = 0
-    
+
     with open(graph_file, 'r') as f:
         for line in f:
             parts = line.strip().split('\t')
@@ -55,8 +56,76 @@ def count_edges_and_nodes(graph_file):
                 nodes.add(parts[0])
                 nodes.add(parts[1])
                 edge_count += 1
-    
+
     return edge_count, len(nodes)
+
+
+def convert_emb_to_npz(emb_file, remove_emb=True):
+    """Convert .emb text format to compressed .npz NumPy format.
+
+    Args:
+        emb_file: Path to .emb file
+        remove_emb: If True, remove the .emb file after conversion
+
+    Returns:
+        str: Path to created .npz file
+    """
+    emb_path = Path(emb_file)
+    npz_path = emb_path.with_suffix('.npz')
+
+    print(f"Converting {emb_path.name} to compressed .npz format...")
+
+    # Read header first to get dimensions
+    with open(emb_path, 'r') as f:
+        header = f.readline().strip().split()
+        num_nodes = int(header[0])
+        embedding_dim = int(header[1])
+
+    print(f"  {num_nodes:,} nodes × {embedding_dim} dimensions")
+
+    # Pre-allocate numpy arrays for memory efficiency
+    node_ids_array = np.empty(num_nodes, dtype='U50')  # Assume max 50 char IDs
+    embeddings_array = np.empty((num_nodes, embedding_dim), dtype=np.float32)
+
+    # Read embeddings directly into pre-allocated arrays
+    with open(emb_path, 'r') as f:
+        # Skip header
+        f.readline()
+
+        for i, line in enumerate(f):
+            parts = line.strip().split()
+            node_ids_array[i] = parts[0]
+            embeddings_array[i] = [float(x) for x in parts[1:]]
+
+            # Progress indicator for large files
+            if (i + 1) % 500000 == 0:
+                print(f"  Progress: {i+1:,} / {num_nodes:,} nodes ({(i+1)/num_nodes*100:.1f}%)")
+
+    # Save as compressed npz
+    np.savez_compressed(
+        npz_path,
+        node_ids=node_ids_array,
+        embeddings=embeddings_array,
+        num_nodes=num_nodes,
+        embedding_dim=embedding_dim
+    )
+
+    # Get file sizes
+    emb_size = emb_path.stat().st_size
+    npz_size = npz_path.stat().st_size
+    compression_ratio = (1 - npz_size / emb_size) * 100
+
+    print(f"Conversion complete:")
+    print(f"  Original .emb:  {emb_size / 1024**3:8.2f} GB")
+    print(f"  Compressed .npz: {npz_size / 1024**3:8.2f} GB")
+    print(f"  Space saved:     {compression_ratio:8.1f}%")
+
+    # Remove original if requested
+    if remove_emb:
+        print(f"  Removing original .emb file...")
+        emb_path.unlink()
+
+    return str(npz_path)
 
 
 def generate_embeddings(graph_file, 
@@ -141,7 +210,11 @@ def generate_embeddings(graph_file,
     # Record end time
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
-    
+
+    # Convert .emb to compressed .npz format
+    print()  # Blank line for readability
+    npz_file = convert_emb_to_npz(output_file, remove_emb=True)
+
     # Create provenance metadata
     provenance = {
         "timestamp": start_time.isoformat(),
@@ -151,7 +224,8 @@ def generate_embeddings(graph_file,
         "algorithm": "node2vec",
         "tool": "pecanpy",
         "input_graph_file": graph_file,
-        "output_embeddings_file": output_file,
+        "output_embeddings_file": npz_file,
+        "output_format": "npz_compressed",
         "parameters": {
             "dimensions": dimensions,
             "walk_length": walk_length,
@@ -177,8 +251,8 @@ def generate_embeddings(graph_file,
     with open(provenance_file, 'w') as f:
         json.dump(provenance, f, indent=2)
     
-    print(f"Provenance saved: {provenance_file}")
-    print(f"Embeddings generated: {output_file}")
+    print(f"\nProvenance saved: {provenance_file}")
+    print(f"Embeddings generated: {npz_file}")
     print(f"Duration: {duration:.2f} seconds")
     
     return version_dir

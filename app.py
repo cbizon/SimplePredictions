@@ -58,10 +58,10 @@ def discover_models() -> Dict[str, Any]:
             # Extract meaningful info from provenance
             negative_method = provenance['input_data']['negative_sampling_method']
             has_contraindications = provenance['input_data']['contraindications'] is not None
-            
+
             # Create descriptive labels
             negative_label = "Contraindications" if has_contraindications else "Random"
-            
+
             # Get graph description from graph provenance if available
             graph_description = None
             # model_dir is like: graphs/robokop_base_nonredundant_CCDD/embeddings/embeddings_0/models/model_0
@@ -72,6 +72,21 @@ def discover_models() -> Dict[str, Any]:
                     with open(graph_dir, 'r') as f:
                         graph_provenance = json.load(f)
                         graph_description = graph_provenance.get('description', None)
+                except:
+                    pass
+
+            # Get embedding information from embedding provenance
+            embedding_algorithm = "unknown"
+            embedding_tool = "unknown"
+            embedding_description = None
+            embeddings_dir = os.path.join(path_parts[0], path_parts[1], path_parts[2], path_parts[3], "provenance.json")
+            if os.path.exists(embeddings_dir):
+                try:
+                    with open(embeddings_dir, 'r') as f:
+                        embedding_provenance = json.load(f)
+                        embedding_algorithm = embedding_provenance.get('algorithm', 'unknown')
+                        embedding_tool = embedding_provenance.get('tool', 'unknown')
+                        embedding_description = embedding_provenance.get('description', None)
                 except:
                     pass
             
@@ -92,7 +107,10 @@ def discover_models() -> Dict[str, Any]:
                 'metrics': metrics,
                 'provenance': provenance,
                 'embedding_dim': provenance['input_data']['embedding_info']['embedding_dim'],
-                'embedding_params': provenance['input_data']['embedding_info']['embedding_provenance']['parameters']
+                'embedding_params': provenance['input_data']['embedding_info']['embedding_provenance']['parameters'],
+                'embedding_algorithm': embedding_algorithm,
+                'embedding_tool': embedding_tool,
+                'embedding_description': embedding_description
             }
             
             # Organize hierarchically
@@ -173,11 +191,23 @@ def generate_plots(selected_models: List[Dict[str, Any]]) -> str:
                 
                 if filtered_data:
                     ks, values = zip(*filtered_data)
-                    
-                    # Create model label with more descriptive info
-                    label = f"{model['graph_name']} ({model['negative_label']})"
-                    
-                    ax.plot(ks, values, marker='o', linewidth=2, markersize=4, 
+
+                    # Create model label with more descriptive info including embedding type
+                    embedding_type = model.get('embedding_algorithm', 'unknown')
+                    embedding_dim = model.get('embedding_dim', '?')
+
+                    if embedding_type == 'sparse_autoencoder':
+                        # Show sparse autoencoder with dimension and k parameter
+                        k_param = model.get('embedding_params', {}).get('k', '?')
+                        label = f"{model['graph_name']} - {embedding_type} ({embedding_dim}D, k={k_param}) ({model['negative_label']})"
+                    elif embedding_type != 'unknown' and embedding_type != 'node2vec':
+                        # Show other non-standard embedding types with dimension
+                        label = f"{model['graph_name']} - {embedding_type} ({embedding_dim}D) ({model['negative_label']})"
+                    else:
+                        # node2vec or unknown - show dimension
+                        label = f"{model['graph_name']} ({embedding_dim}D) ({model['negative_label']})"
+
+                    ax.plot(ks, values, marker='o', linewidth=2, markersize=4,
                            color=colors[i], label=label, alpha=0.8)
             
             ax.set_xlabel('K')
@@ -195,7 +225,21 @@ def generate_plots(selected_models: List[Dict[str, Any]]) -> str:
             
             # Only add legend to top-right plot to avoid clutter
             if row == 0 and col == 1:
-                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                # Configure legend with text wrapping and better spacing
+                legend = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left',
+                                 fontsize=9, frameon=True, shadow=True,
+                                 ncol=1)  # Single column for vertical stacking
+                # Enable text wrapping by setting max width
+                for text in legend.get_texts():
+                    text.set_fontsize(8)
+                    # Use newline to manually wrap long labels
+                    label_text = text.get_text()
+                    # Split at strategic points to wrap
+                    if ' - ' in label_text and len(label_text) > 50:
+                        # Split after graph name
+                        parts = label_text.split(' - ', 1)
+                        if len(parts) == 2:
+                            text.set_text(parts[0] + '\n  ' + parts[1])
     
     plt.tight_layout()
     
@@ -238,4 +282,4 @@ def generate_plots_endpoint():
         return jsonify({'error': f'Plot generation failed: {str(e)}'}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5001)

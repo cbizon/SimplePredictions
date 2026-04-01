@@ -24,12 +24,78 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modeling.train_model import load_embeddings, load_ground_truth, create_feature_vectors, extract_node_ids_from_positives, generate_negative_samples
+from modeling.shap_analysis import compute_shap_for_top_k, save_shap_analysis
 from sklearn.model_selection import train_test_split
+
+
+def calculate_metrics_from_predictions(y_true, y_scores, eval_pairs, original_gt_count, training_positives_count):
+    """Calculate all evaluation metrics from predictions (y_true, y_scores).
+
+    This is the core metrics calculation function that can be reused for any model
+    (internal or external) that provides predictions for drug-disease pairs.
+
+    Args:
+        y_true: Array of true labels (1 for positive, 0 for negative)
+        y_scores: Array of prediction scores
+        eval_pairs: List of (drug_id, disease_id) tuples corresponding to y_true/y_scores
+        original_gt_count: Total number of ground truth indications before train/test split
+        training_positives_count: Number of positive pairs used in training
+
+    Returns:
+        dict: All calculated metrics including precision@k, recall@k, total_recall@k, hits@k, k_values
+    """
+    # Convert to numpy arrays if not already
+    y_scores = np.array(y_scores)
+    y_true = np.array(y_true)
+
+    print(f"=== CALCULATING METRICS ===")
+    print(f"Evaluation combinations: {len(eval_pairs):,}")
+    print(f"Evaluation positives: {int(np.sum(y_true))}")
+    print(f"Evaluation negatives: {int(len(y_true) - np.sum(y_true))}")
+
+    # Define K values to evaluate - logarithmic spacing plus maximum
+    max_k = len(y_scores)
+    k_values = [1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000]
+    k_values = [k for k in k_values if k <= max_k]  # Only valid K values
+
+    # Always include the maximum K
+    if max_k not in k_values:
+        k_values.append(max_k)
+
+    k_values = sorted(k_values)
+
+    # Calculate ranking metrics (global precision/recall, per-disease hits)
+    precision_at_k = calculate_precision_at_k(y_true, y_scores, k_values)
+    recall_at_k = calculate_recall_at_k(y_true, y_scores, k_values)
+
+    # Calculate total recall using original ground truth count
+    total_recall_denominator = original_gt_count - training_positives_count
+    sorted_indices = np.argsort(y_scores)[::-1]
+    sorted_true = y_true[sorted_indices]
+    total_recall_at_k = {k: np.sum(sorted_true[:k]) / total_recall_denominator if total_recall_denominator > 0 else 0 for k in k_values}
+
+    # Calculate theoretical maximum (all evaluation positives found)
+    total_recall_max = int(np.sum(y_true)) / total_recall_denominator if total_recall_denominator > 0 else 0
+
+    # Calculate hits@k per disease
+    hits_at_k = calculate_hits_at_k_per_disease(eval_pairs, y_true, y_scores, k_values)
+
+    return {
+        'precision_at_k': precision_at_k,
+        'recall_at_k': recall_at_k,
+        'total_recall_at_k': total_recall_at_k,
+        'total_recall_max': total_recall_max,
+        'hits_at_k': hits_at_k,
+        'k_values': k_values,
+        'evaluation_combinations': len(eval_pairs),
+        'evaluation_positives': int(np.sum(y_true)),
+        'evaluation_negatives': int(len(y_true) - np.sum(y_true))
+    }
 
 
 def extract_model_metadata(model_dir):
     """Extract metadata from a model directory.
-    
+
     Args:
         model_dir: Path to model directory (e.g., graphs/robokop_base/CCDD/models/model_2)
         
@@ -40,7 +106,7 @@ def extract_model_metadata(model_dir):
     provenance_file = os.path.join(model_dir, "provenance.json")
     if not os.path.exists(provenance_file):
         raise FileNotFoundError(f"Provenance file not found: {provenance_file}")
-    
+
     with open(provenance_file, 'r') as f:
         provenance = json.load(f)
     
@@ -75,9 +141,16 @@ def extract_model_metadata(model_dir):
         "provenance": provenance
     }
     
-    # Validate critical paths exist
-    if metadata["embeddings_file"] and not os.path.exists(metadata["embeddings_file"]):
-        raise FileNotFoundError(f"Embeddings file not found: {metadata['embeddings_file']}")
+    # Validate critical paths exist (try both .emb and .npz extensions)
+    if metadata["embeddings_file"]:
+        emb_file = metadata["embeddings_file"]
+        # Try .npz if .emb doesn't exist (automatic conversion)
+        if not os.path.exists(emb_file):
+            npz_file = emb_file.replace('.emb', '.npz')
+            if os.path.exists(npz_file):
+                metadata["embeddings_file"] = npz_file
+            else:
+                raise FileNotFoundError(f"Embeddings file not found: {emb_file} or {npz_file}")
     
     if metadata["ground_truth_file"] and not os.path.exists(metadata["ground_truth_file"]):
         raise FileNotFoundError(f"Ground truth file not found: {metadata['ground_truth_file']}")
@@ -245,52 +318,41 @@ def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, d
     # Convert to numpy arrays
     y_scores = np.array(y_scores)
     y_true = np.array(y_true)
-    
-    print(f"=== FINAL EVALUATION SET ===") 
+
+    print(f"=== FINAL EVALUATION SET ===")
     print(f"Evaluation combinations processed: {len(eval_pairs):,}")
     print(f"Evaluation pairs labeled as positive: {int(np.sum(y_true))}")
     print(f"Max possible recall: 1.0 (all evaluation positives should be findable)")
     print(f"Evaluation positives should equal remaining GT positives: {int(np.sum(y_true)) == len(evaluation_positives)}")
-    
-    # Define K values to evaluate - logarithmic spacing plus maximum
-    max_k = len(y_scores)
-    k_values = [1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000]
-    k_values = [k for k in k_values if k <= max_k]  # Only valid K values
-    
-    # Always include the maximum K
-    if max_k not in k_values:
-        k_values.append(max_k)
-    
-    k_values = sorted(k_values)
-    
-    # Calculate ranking metrics (global precision/recall, per-disease hits)
-    precision_at_k = calculate_precision_at_k(y_true, y_scores, k_values)
-    recall_at_k = calculate_recall_at_k(y_true, y_scores, k_values)
-    # Calculate total recall using original ground truth count
-    total_recall_denominator = original_gt_count - len(training_positives)
-    sorted_indices = np.argsort(y_scores)[::-1]
-    sorted_true = y_true[sorted_indices]
-    total_recall_at_k = {k: np.sum(sorted_true[:k]) / total_recall_denominator if total_recall_denominator > 0 else 0 for k in k_values}
-    # Calculate theoretical maximum (all evaluation positives found)
-    total_recall_max = int(np.sum(y_true)) / total_recall_denominator if total_recall_denominator > 0 else 0
-    hits_at_k = calculate_hits_at_k_per_disease(eval_pairs, y_true, y_scores, k_values)
-    
-    return {
-        'precision_at_k': precision_at_k,
-        'recall_at_k': recall_at_k,
-        'total_recall_at_k': total_recall_at_k,
-        'total_recall_max': total_recall_max,
-        'hits_at_k': hits_at_k,
-        'k_values': k_values,
-        'evaluation_combinations': len(eval_pairs),
-        'evaluation_positives': int(np.sum(y_true)),
-        'evaluation_negatives': int(len(y_true) - np.sum(y_true)),
-        'training_pairs_excluded': len(training_pairs_to_exclude),
-        'all_combinations': len(drug_ids) * len(disease_ids),
-        'y_true': y_true,
-        'y_scores': y_scores,
-        'test_pairs': eval_pairs
-    }
+
+    # Calculate all metrics using the shared function
+    metrics = calculate_metrics_from_predictions(
+        y_true=y_true,
+        y_scores=y_scores,
+        eval_pairs=eval_pairs,
+        original_gt_count=original_gt_count,
+        training_positives_count=len(training_positives)
+    )
+
+    # Reconstruct feature vectors for SHAP analysis
+    # We need to rebuild the feature vectors for all eval pairs
+    feature_vectors = []
+    for drug_id, disease_id in eval_pairs:
+        drug_emb = embeddings.get(drug_id, zero_embedding)
+        disease_emb = embeddings.get(disease_id, zero_embedding)
+        combined_features = np.concatenate([drug_emb, disease_emb])
+        feature_vectors.append(combined_features)
+    feature_vectors = np.array(feature_vectors)
+
+    # Add additional context to metrics dict
+    metrics['training_pairs_excluded'] = len(training_pairs_to_exclude)
+    metrics['all_combinations'] = len(drug_ids) * len(disease_ids)
+    metrics['y_true'] = y_true
+    metrics['y_scores'] = y_scores
+    metrics['test_pairs'] = eval_pairs
+    metrics['feature_vectors'] = feature_vectors
+
+    return metrics
 
 
 def get_model_info(model_file):
@@ -609,12 +671,13 @@ def create_precision_recall_curve(pr_curve_data, output_dir):
     plt.close()
 
 
-def evaluate_model_simple(model_dir):
+def evaluate_model_simple(model_dir, shap_top_k=None):
     """Evaluate model and save metrics to model directory.
-    
+
     Args:
         model_dir: Path to model directory (e.g., graphs/.../embeddings/embeddings_0/models/model_0)
-        
+        shap_top_k: Number of top predictions to compute SHAP values for (None to skip SHAP analysis)
+
     Returns:
         str: Path to the evaluation metrics file
     """
@@ -719,7 +782,26 @@ def evaluate_model_simple(model_dir):
             hits = eval_results['hits_at_k'][k]
             if not np.isnan(precision):
                 print(f"K={k:3d}: Precision={precision:.4f}, Recall={recall:.4f}, Hits={hits:.4f}")
-    
+
+    # Perform SHAP analysis if requested (0 or negative means ALL true positives)
+    if shap_top_k is not None:
+        print(f"\n=== Performing SHAP analysis for top {shap_top_k} true positive predictions ===")
+        shap_results = compute_shap_for_top_k(
+            model=rf_model,
+            feature_vectors=eval_results['feature_vectors'],
+            predictions=eval_results['y_scores'],
+            pairs=eval_results['test_pairs'],
+            embeddings=embeddings,
+            top_k=shap_top_k,
+            y_true=eval_results['y_true']
+        )
+
+        # Save SHAP results to model directory (overwrite existing file)
+        shap_output_file = os.path.join(model_dir, f"shap_top_{shap_top_k}.json")
+        save_shap_analysis(shap_results, shap_output_file)
+
+        print(f"SHAP analysis saved to: {shap_output_file}")
+
     return output_file
 
 
@@ -786,15 +868,15 @@ def evaluate_multiple_models_with_provenance(model_configs):
         with open(model_path, 'rb') as f:
             rf_model = pickle.load(f)
         
-        # Determine embeddings file - default to embeddings_0 if not specified
+        # Determine embeddings file (.npz format) - default to embeddings_0 if not specified
         if embeddings_version:
-            embeddings_file = os.path.join(graph_dir, "embeddings", embeddings_version, "embeddings.emb")
+            embeddings_file = os.path.join(graph_dir, "embeddings", embeddings_version, "embeddings.npz")
         else:
-            # Try embeddings_0 first, then fall back to direct embeddings.emb
-            embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings_0", "embeddings.emb")
+            # Try embeddings_0 first, then fall back to direct embeddings.npz
+            embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings_0", "embeddings.npz")
             if not os.path.exists(embeddings_file):
-                embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.emb")
-        
+                embeddings_file = os.path.join(graph_dir, "embeddings", "embeddings.npz")
+
         if not os.path.exists(embeddings_file):
             raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
         
@@ -963,16 +1045,18 @@ def evaluate_multiple_models_with_provenance(model_configs):
 def main():
     """Command line interface."""
     parser = argparse.ArgumentParser(description="Evaluate single model and save metrics to model directory")
-    
+
     # Single model evaluation only
     parser.add_argument("--model-dir", required=True,
                        help="Path to model directory (e.g., graphs/.../embeddings/embeddings_0/models/model_0)")
-    
+    parser.add_argument("--shap-top-k", type=int, default=None,
+                       help="Number of top true positive predictions to compute SHAP values for (default: None, skip SHAP; use 0 or -1 for ALL true positives)")
+
     args = parser.parse_args()
-    
+
     # Single model evaluation - save to model directory
-    output_file = evaluate_model_simple(args.model_dir)
-    
+    output_file = evaluate_model_simple(args.model_dir, shap_top_k=args.shap_top_k)
+
     print(f"\nEvaluation complete! Metrics saved to: {output_file}")
 
 

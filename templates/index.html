@@ -214,10 +214,18 @@
                     <div class="embedding-section">
                         {% set first_model = models_hierarchy[graph_name][embed_version][models_hierarchy[graph_name][embed_version].keys()|list|first] %}
                         <h4 class="embedding-title">
-                            🔢 {{ embed_version }} 
+                            🔢 {{ embed_version }}
+                            {% if first_model.embedding_algorithm != 'unknown' %}
+                                {% if first_model.embedding_algorithm == 'sparse_autoencoder' %}
+                                <span class="embedding-info">({{ first_model.embedding_algorithm }}, {{ first_model.embedding_dim }}D, k={{ first_model.embedding_params.k }})</span>
+                                {% else %}
+                                <span class="embedding-info">({{ first_model.embedding_algorithm }}, {{ first_model.embedding_dim }}D)</span>
+                                {% endif %}
+                            {% else %}
                             <span class="embedding-info">({{ first_model.embedding_dim }}D, p={{ first_model.embedding_params.p }}, q={{ first_model.embedding_params.q }})</span>
+                            {% endif %}
                         </h4>
-                        
+
                         <div class="models-grid">
                             {% for model_version in models_hierarchy[graph_name][embed_version] %}
                             {% set model = models_hierarchy[graph_name][embed_version][model_version] %}
