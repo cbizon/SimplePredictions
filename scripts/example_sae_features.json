@@ -1,0 +1,24 @@
+{
+  "drug_emb_18": "Cardiovascular activity pathway - targets cardiac receptors",
+  "drug_emb_403": "Anti-inflammatory mechanism - COX pathway modulation",
+  "drug_emb_305": "Metabolic regulation - glucose homeostasis",
+  "drug_emb_107": "Neurotransmitter modulation - GABA/serotonin system",
+  "drug_emb_265": "Cell proliferation control - kinase inhibition",
+  "drug_emb_346": "Protein synthesis regulation - ribosomal targeting",
+  "drug_emb_445": "Lipid metabolism pathway",
+  "drug_emb_34": "DNA repair mechanisms",
+  "drug_emb_139": "Immune response modulation - T-cell activity",
+  "drug_emb_232": "Oxidative stress response",
+  "drug_emb_15": "Blood pressure regulation - ACE/ARB mechanisms",
+
+  "disease_emb_167": "Metabolic syndrome cluster - insulin resistance, obesity",
+  "disease_emb_426": "Inflammatory disease markers - elevated cytokines",
+  "disease_emb_448": "Cardiovascular disease phenotype - atherosclerosis",
+  "disease_emb_392": "Neurological disorder signatures - dopamine dysregulation",
+  "disease_emb_190": "Autoimmune disease patterns - antibody profiles",
+  "disease_emb_421": "Cancer-related pathways - oncogene activation",
+  "disease_emb_446": "Respiratory disease phenotypes",
+  "disease_emb_435": "Kidney disease markers - glomerular dysfunction",
+  "disease_emb_319": "Liver disease indicators - hepatic enzyme elevation",
+  "disease_emb_395": "Bone disease phenotypes - osteoporosis markers"
+}

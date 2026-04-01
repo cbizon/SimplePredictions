@@ -117,14 +117,33 @@ def test_get_next_model_version_nonexistent_dir():
         assert version == 0
 
 
-def test_get_embedding_info(sample_embeddings_file):
-    """Test extracting embedding metadata."""
-    info = get_embedding_info(sample_embeddings_file)
-    
-    assert info["embeddings_file"] == sample_embeddings_file
-    assert info["num_nodes"] == 3
-    assert info["embedding_dim"] == 4
-    assert "error" not in info
+def test_get_embedding_info():
+    """Test extracting embedding metadata from .npz file."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create an npz file
+        npz_path = os.path.join(temp_dir, "embeddings.npz")
+
+        node_ids = np.array(['CHEBI:123', 'MONDO:456', 'HGNC:789'], dtype='U10')
+        embeddings_array = np.array([
+            [0.1, 0.2, 0.3, 0.4],
+            [0.5, 0.6, 0.7, 0.8],
+            [0.9, 1.0, 1.1, 1.2]
+        ], dtype=np.float32)
+
+        np.savez_compressed(
+            npz_path,
+            node_ids=node_ids,
+            embeddings=embeddings_array,
+            num_nodes=3,
+            embedding_dim=4
+        )
+
+        info = get_embedding_info(npz_path)
+
+        assert info["embeddings_file"] == npz_path
+        assert info["num_nodes"] == 3
+        assert info["embedding_dim"] == 4
+        assert "error" not in info
 
 
 def test_get_embedding_info_nonexistent_file():
@@ -135,44 +154,75 @@ def test_get_embedding_info_nonexistent_file():
     assert "not found" in info["error"]
 
 
-def test_get_embedding_info_with_provenance(sample_embeddings_file):
+def test_get_embedding_info_with_provenance():
     """Test embedding info with provenance file."""
-    # Create provenance file in same directory
-    embedding_dir = os.path.dirname(sample_embeddings_file)
-    provenance_file = os.path.join(embedding_dir, "provenance.json")
-    
-    provenance_data = {
-        "timestamp": "2023-01-01T00:00:00",
-        "algorithm": "node2vec",
-        "parameters": {"dimensions": 4}
-    }
-    
-    with open(provenance_file, 'w') as f:
-        json.dump(provenance_data, f)
-    
-    try:
-        info = get_embedding_info(sample_embeddings_file)
-        
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create an npz file
+        npz_path = os.path.join(temp_dir, "embeddings.npz")
+
+        node_ids = np.array(['CHEBI:123'], dtype='U10')
+        embeddings_array = np.array([[0.1, 0.2, 0.3, 0.4]], dtype=np.float32)
+
+        np.savez_compressed(
+            npz_path,
+            node_ids=node_ids,
+            embeddings=embeddings_array,
+            num_nodes=1,
+            embedding_dim=4
+        )
+
+        # Create provenance file in same directory
+        provenance_file = os.path.join(temp_dir, "provenance.json")
+
+        provenance_data = {
+            "timestamp": "2023-01-01T00:00:00",
+            "algorithm": "node2vec",
+            "parameters": {"dimensions": 4}
+        }
+
+        with open(provenance_file, 'w') as f:
+            json.dump(provenance_data, f)
+
+        info = get_embedding_info(npz_path)
+
         assert "embedding_provenance" in info
         assert info["embedding_provenance"]["algorithm"] == "node2vec"
         assert info["embedding_provenance"]["parameters"]["dimensions"] == 4
-    finally:
-        os.unlink(provenance_file)
 
 
-def test_load_embeddings(sample_embeddings_file):
-    """Test loading embeddings from file."""
-    embeddings = load_embeddings(sample_embeddings_file)
-    
-    assert len(embeddings) == 3
-    assert "CHEBI:123" in embeddings
-    assert "MONDO:456" in embeddings
-    assert "HGNC:789" in embeddings
-    
-    # Test specific values
-    np.testing.assert_array_equal(embeddings["CHEBI:123"], [0.1, 0.2, 0.3, 0.4])
-    np.testing.assert_array_equal(embeddings["MONDO:456"], [0.5, 0.6, 0.7, 0.8])
-    np.testing.assert_array_equal(embeddings["HGNC:789"], [0.9, 1.0, 1.1, 1.2])
+def test_load_embeddings_npz():
+    """Test loading embeddings from .npz file."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create an npz file
+        npz_path = os.path.join(temp_dir, "embeddings.npz")
+
+        node_ids = np.array(['CHEBI:123', 'MONDO:456', 'HGNC:789'], dtype='U10')
+        embeddings_array = np.array([
+            [0.1, 0.2, 0.3, 0.4],
+            [0.5, 0.6, 0.7, 0.8],
+            [0.9, 1.0, 1.1, 1.2]
+        ], dtype=np.float32)
+
+        np.savez_compressed(
+            npz_path,
+            node_ids=node_ids,
+            embeddings=embeddings_array,
+            num_nodes=3,
+            embedding_dim=4
+        )
+
+        # Test loading
+        embeddings = load_embeddings(npz_path)
+
+        assert len(embeddings) == 3
+        assert "CHEBI:123" in embeddings
+        assert "MONDO:456" in embeddings
+        assert "HGNC:789" in embeddings
+
+        # Test specific values (float32 precision)
+        np.testing.assert_allclose(embeddings["CHEBI:123"], [0.1, 0.2, 0.3, 0.4], rtol=1e-6)
+        np.testing.assert_allclose(embeddings["MONDO:456"], [0.5, 0.6, 0.7, 0.8], rtol=1e-6)
+        np.testing.assert_allclose(embeddings["HGNC:789"], [0.9, 1.0, 1.1, 1.2], rtol=1e-6)
 
 
 def test_load_ground_truth(sample_ground_truth_file):

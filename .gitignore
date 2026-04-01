@@ -141,8 +141,17 @@ dmypy.json
 # Temporary files
 *.tmp
 *.temp
+*.bak*
+*.orig
+*.rej
 
 # Project-specific data directories
 input_graphs/
 graphs/
 evaluations/
+analysis_results/
+cyclops_predictions/
+
+# Local scratch data
+ground_truth/*_medic_Nov26*.csv
+non_indication_treats_edges.tsv

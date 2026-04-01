@@ -13,6 +13,25 @@ from src.embedding.generate_embeddings import (
 )
 
 
+def create_mock_emb_file(output_path, num_nodes=5, embedding_dim=128):
+    """Helper function to create a mock .emb file for testing.
+
+    Args:
+        output_path: Path where the .emb file should be created
+        num_nodes: Number of nodes to include
+        embedding_dim: Dimension of embeddings
+    """
+    with open(output_path, 'w') as f:
+        # Write header
+        f.write(f"{num_nodes} {embedding_dim}\n")
+
+        # Write mock embeddings (just zeros for testing)
+        for i in range(num_nodes):
+            node_id = f"NODE:{i}"
+            embeddings = " ".join(["0.0"] * embedding_dim)
+            f.write(f"{node_id} {embeddings}\n")
+
+
 @pytest.fixture
 def temp_embeddings_dir():
     """Create temporary embeddings directory with existing versions."""
@@ -134,12 +153,27 @@ def test_count_edges_and_nodes_nonexistent_file():
 @patch('subprocess.run')
 def test_generate_embeddings_success(mock_run, sample_graph_file):
     """Test successful embedding generation."""
-    # Mock successful subprocess run
-    mock_result = MagicMock()
-    mock_result.stdout = "Embedding generation completed"
-    mock_result.stderr = ""
-    mock_run.return_value = mock_result
-    
+    # Mock successful subprocess run with side effect to create .emb file
+    def create_emb_side_effect(cmd, **kwargs):
+        # Extract output path from command
+        output_idx = cmd.index("--output") + 1
+        output_path = cmd[output_idx]
+
+        # Extract dimensions from command
+        dim_idx = cmd.index("--dimensions") + 1
+        dimensions = int(cmd[dim_idx])
+
+        # Create mock .emb file
+        create_mock_emb_file(output_path, num_nodes=5, embedding_dim=dimensions)
+
+        # Return mock result
+        mock_result = MagicMock()
+        mock_result.stdout = "Embedding generation completed"
+        mock_result.stderr = ""
+        return mock_result
+
+    mock_run.side_effect = create_emb_side_effect
+
     # Create a temporary base directory structure
     with tempfile.TemporaryDirectory() as temp_dir:
         # Set up directory structure: base_dir/graph/edges.edg
@@ -223,11 +257,21 @@ def test_generate_embeddings_nonexistent_file():
 @patch('subprocess.run')
 def test_generate_embeddings_directory_creation(mock_run, sample_graph_file):
     """Test that embedding generation creates necessary directories."""
-    mock_result = MagicMock()
-    mock_result.stdout = "Success"
-    mock_result.stderr = ""
-    mock_run.return_value = mock_result
-    
+    # Mock with side effect to create .emb file
+    def create_emb_side_effect(cmd, **kwargs):
+        output_idx = cmd.index("--output") + 1
+        output_path = cmd[output_idx]
+        dim_idx = cmd.index("--dimensions") + 1
+        dimensions = int(cmd[dim_idx])
+        create_mock_emb_file(output_path, num_nodes=5, embedding_dim=dimensions)
+
+        mock_result = MagicMock()
+        mock_result.stdout = "Success"
+        mock_result.stderr = ""
+        return mock_result
+
+    mock_run.side_effect = create_emb_side_effect
+
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create base directory but not embeddings directory
         graph_dir = os.path.join(temp_dir, "graph")
@@ -251,11 +295,21 @@ def test_generate_embeddings_directory_creation(mock_run, sample_graph_file):
 @patch('subprocess.run')
 def test_generate_embeddings_multiple_versions(mock_run, sample_graph_file):
     """Test that multiple embedding generations create different versions."""
-    mock_result = MagicMock()
-    mock_result.stdout = "Success"
-    mock_result.stderr = ""
-    mock_run.return_value = mock_result
-    
+    # Mock with side effect to create .emb file
+    def create_emb_side_effect(cmd, **kwargs):
+        output_idx = cmd.index("--output") + 1
+        output_path = cmd[output_idx]
+        dim_idx = cmd.index("--dimensions") + 1
+        dimensions = int(cmd[dim_idx])
+        create_mock_emb_file(output_path, num_nodes=5, embedding_dim=dimensions)
+
+        mock_result = MagicMock()
+        mock_result.stdout = "Success"
+        mock_result.stderr = ""
+        return mock_result
+
+    mock_run.side_effect = create_emb_side_effect
+
     with tempfile.TemporaryDirectory() as temp_dir:
         graph_dir = os.path.join(temp_dir, "graph")
         os.makedirs(graph_dir)
@@ -282,11 +336,21 @@ def test_generate_embeddings_multiple_versions(mock_run, sample_graph_file):
 @patch('subprocess.run')
 def test_generate_embeddings_default_parameters(mock_run, sample_graph_file):
     """Test embedding generation with default parameters."""
-    mock_result = MagicMock()
-    mock_result.stdout = "Success"
-    mock_result.stderr = ""
-    mock_run.return_value = mock_result
-    
+    # Mock with side effect to create .emb file
+    def create_emb_side_effect(cmd, **kwargs):
+        output_idx = cmd.index("--output") + 1
+        output_path = cmd[output_idx]
+        dim_idx = cmd.index("--dimensions") + 1
+        dimensions = int(cmd[dim_idx])
+        create_mock_emb_file(output_path, num_nodes=5, embedding_dim=dimensions)
+
+        mock_result = MagicMock()
+        mock_result.stdout = "Success"
+        mock_result.stderr = ""
+        return mock_result
+
+    mock_run.side_effect = create_emb_side_effect
+
     with tempfile.TemporaryDirectory() as temp_dir:
         graph_dir = os.path.join(temp_dir, "graph")
         os.makedirs(graph_dir)
@@ -318,10 +382,20 @@ def test_generate_embeddings_default_parameters(mock_run, sample_graph_file):
 @patch('subprocess.run')
 def test_generate_embeddings_custom_parameters(mock_run, sample_graph_file):
     """Test embedding generation with custom parameters."""
-    mock_result = MagicMock()
-    mock_result.stdout = "Custom run"
-    mock_result.stderr = "Custom stderr"
-    mock_run.return_value = mock_result
+    # Mock with side effect to create .emb file
+    def create_emb_side_effect(cmd, **kwargs):
+        output_idx = cmd.index("--output") + 1
+        output_path = cmd[output_idx]
+        dim_idx = cmd.index("--dimensions") + 1
+        dimensions = int(cmd[dim_idx])
+        create_mock_emb_file(output_path, num_nodes=5, embedding_dim=dimensions)
+
+        mock_result = MagicMock()
+        mock_result.stdout = "Custom run"
+        mock_result.stderr = "Custom stderr"
+        return mock_result
+
+    mock_run.side_effect = create_emb_side_effect
     
     with tempfile.TemporaryDirectory() as temp_dir:
         graph_dir = os.path.join(temp_dir, "graph")
@@ -367,11 +441,21 @@ def test_generate_embeddings_custom_parameters(mock_run, sample_graph_file):
 @patch('subprocess.run')
 def test_generate_embeddings_provenance_metadata(mock_run, sample_graph_file):
     """Test that all expected provenance metadata is captured."""
-    mock_result = MagicMock()
-    mock_result.stdout = "Success"
-    mock_result.stderr = ""
-    mock_run.return_value = mock_result
-    
+    # Mock with side effect to create .emb file
+    def create_emb_side_effect(cmd, **kwargs):
+        output_idx = cmd.index("--output") + 1
+        output_path = cmd[output_idx]
+        dim_idx = cmd.index("--dimensions") + 1
+        dimensions = int(cmd[dim_idx])
+        create_mock_emb_file(output_path, num_nodes=5, embedding_dim=dimensions)
+
+        mock_result = MagicMock()
+        mock_result.stdout = "Success"
+        mock_result.stderr = ""
+        return mock_result
+
+    mock_run.side_effect = create_emb_side_effect
+
     with tempfile.TemporaryDirectory() as temp_dir:
         graph_dir = os.path.join(temp_dir, "graph")
         os.makedirs(graph_dir)

@@ -7,7 +7,6 @@ export PATH="/opt/anaconda3/envs/simplepredictions/bin:$PATH"
 
 # Create graphs
 #python src/graph_modification/create_robokop_input.py --style CCDD
-#python src/graph_modification/create_robokop_input.py --style CGD
 
 # Generate embeddings
 #python src/embedding/generate_embeddings.py --graph-file graphs/robokop_base_nonredundant_CCDD/graph/edges.edg &
