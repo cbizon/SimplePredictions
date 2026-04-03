@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """Tests for SHAP analysis module."""
 
+import os
 import pytest
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-import sys
-import os
-
-# Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
-
-from modeling.shap_analysis import compute_shap_for_top_k, save_shap_analysis
 import tempfile
+
+from src.modeling.shap_analysis import compute_shap_for_top_k, save_shap_analysis
 
 
 def test_compute_shap_for_top_k():

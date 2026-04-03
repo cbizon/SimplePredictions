@@ -19,13 +19,9 @@ import seaborn as sns
 from datetime import datetime
 from pathlib import Path
 
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from modeling.train_model import load_embeddings, load_ground_truth, create_feature_vectors, extract_node_ids_from_positives, generate_negative_samples
+from src.modeling.train_model import load_embeddings, load_ground_truth, create_feature_vectors, extract_node_ids_from_positives, generate_negative_samples
 try:
-    from modeling.shap_analysis import compute_shap_for_top_k, save_shap_analysis
+    from src.modeling.shap_analysis import compute_shap_for_top_k, save_shap_analysis
 except ImportError:  # pragma: no cover - exercised when shap is unavailable
     compute_shap_for_top_k = None
     save_shap_analysis = None

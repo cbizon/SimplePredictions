@@ -21,12 +21,9 @@ import json
 import numpy as np
 import pandas as pd
 from datetime import datetime
-import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from modeling.train_model import load_ground_truth
-from modeling.evaluate_model import calculate_metrics_from_predictions
+from src.modeling.train_model import load_ground_truth
+from src.modeling.evaluate_model import calculate_metrics_from_predictions
 
 
 def load_predictions(predictions_file):

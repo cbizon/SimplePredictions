@@ -2,18 +2,15 @@
 
 set -e
 
-# Activate conda environment
-source /opt/anaconda3/bin/activate simplepredictions
-
 # Create CFD graph
-python src/graph_modification/create_robokop_input.py \
+uv run python src/graph_modification/create_robokop_input.py \
     --style CFD \
     --input-dir input_graphs/robokop_base_nonredundant \
     --indications-file "ground_truth/Indications List.csv" \
     --output-dir graphs
 
 # Generate embeddings
-python src/embedding/generate_embeddings.py \
+uv run python src/embedding/generate_embeddings.py \
     --graph-file graphs/robokop_base_nonredundant_CFD/graph/edges.edg \
     --dimensions 512 \
     --walk-length 30 \
@@ -23,7 +20,7 @@ python src/embedding/generate_embeddings.py \
     --q 1
 
 # Train model
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CFD \
     --ground-truth "ground_truth/Indications List.csv" \
     --embeddings-version embeddings_0 \
@@ -33,5 +30,5 @@ python src/modeling/train_model.py \
     --random-state 42
 
 # Evaluate model
-python src/modeling/evaluate_model.py \
+uv run python src/modeling/evaluate_model.py \
     --model-dir graphs/robokop_base_nonredundant_CFD/embeddings/embeddings_0/models/model_0

@@ -1,8 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-export PATH="/opt/anaconda3/envs/simplepredictions/bin:$PATH"
-
 INPUT_DIR="${INPUT_DIR:-input_graphs/robokop_23e}"
 OUTPUT_DIR="${OUTPUT_DIR:-graphs}"
 GROUND_TRUTH_CSV="${GROUND_TRUTH_CSV:-ground_truth/robokop_23e_gene_disease_gold_standard.csv}"
@@ -50,7 +48,7 @@ echo "PHASE 1: Extracting gene-disease gold standard"
 if [[ "$SKIP_EXISTING" == "1" && -f "$GROUND_TRUTH_CSV" && -f "$GROUND_TRUTH_SUMMARY" ]]; then
   echo "Skipping PHASE 1; outputs already exist."
 else
-  python src/analysis/extract_gene_disease_gold_standard.py \
+  uv run python src/analysis/extract_gene_disease_gold_standard.py \
     --input-dir "$INPUT_DIR" \
     --output-csv "$GROUND_TRUTH_CSV" \
     --summary-json "$GROUND_TRUTH_SUMMARY"
@@ -66,7 +64,7 @@ for style in "${GRAPH_STYLES[@]}"; do
   fi
 
   echo "Creating graph style: $style"
-  python src/graph_modification/create_robokop_input.py \
+  uv run python src/graph_modification/create_robokop_input.py \
     --style "$style" \
     --input-dir "$INPUT_DIR" \
     --output-dir "$OUTPUT_DIR"
@@ -84,7 +82,7 @@ for style in "${GRAPH_STYLES[@]}"; do
   fi
 
   echo "Generating embeddings for: $style"
-  python src/embedding/generate_embeddings.py \
+  uv run python src/embedding/generate_embeddings.py \
     --graph-file "$graph_file" \
     --version-name "$EMBEDDINGS_VERSION" \
     "${EMBEDDING_PARAMS[@]}"
@@ -105,7 +103,7 @@ for style in "${GRAPH_STYLES[@]}"; do
     fi
 
     echo "Training $style with seed $seed"
-    python src/modeling/train_model.py \
+    uv run python src/modeling/train_model.py \
       --graph-dir "$graph_dir" \
       --ground-truth "$GROUND_TRUTH_CSV" \
       --embeddings-version "$EMBEDDINGS_VERSION" \
@@ -130,7 +128,7 @@ for style in "${GRAPH_STYLES[@]}"; do
       fi
 
       echo "Evaluating $(basename "$model_dir") for $style"
-      python src/modeling/evaluate_model.py --model-dir "$model_dir"
+      uv run python src/modeling/evaluate_model.py --model-dir "$model_dir"
     fi
   done
 done

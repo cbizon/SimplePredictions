@@ -21,21 +21,14 @@ This project implements an end-to-end machine learning pipeline for predicting t
 
 ### Prerequisites
 
-- Conda environment with Python 3.11+
+- `uv` installed
 - Access to biomedical knowledge graph data (RoboKOP format)
 
 ### Setup Environment
 
 ```bash
-# Create and activate conda environment
-conda create -n simplepredictions python=3.11
-conda activate simplepredictions
-
-# Install core dependencies
-conda install scikit-learn pandas numpy matplotlib seaborn
-
-# Install specialized packages
-pip install pecanpy jsonlines flask
+# Create the project environment and install dependencies
+uv sync
 ```
 
 ### Step-by-Step Pipeline
@@ -45,13 +38,13 @@ The complete pipeline involves four main steps:
 #### 1. Graph Creation and Filtering
 ```bash
 # Create CCDD graph (Chemical-Chemical + Disease-Disease edges only)
-python src/graph_modification/create_robokop_input.py \
+uv run python src/graph_modification/create_robokop_input.py \
     --style CCDD \
     --input-dir input_graphs/robokop_base_nonredundant \
     --output-dir graphs
 
 # Or create CFD graph with synthetic fake genes for upper bounds
-python src/graph_modification/create_robokop_input.py \
+uv run python src/graph_modification/create_robokop_input.py \
     --style CFD \
     --input-dir input_graphs/robokop_base_nonredundant \
     --indications-file "ground_truth/Indications List.csv" \
@@ -61,7 +54,7 @@ python src/graph_modification/create_robokop_input.py \
 #### 2. Generate Node2Vec Embeddings
 ```bash
 # Generate 512-dimensional embeddings using PecanPy
-python src/embedding/generate_embeddings.py \
+uv run python src/embedding/generate_embeddings.py \
     --graph-file graphs/robokop_base_nonredundant_CCDD/graph/edges.edg \
     --dimensions 512 \
     --walk-length 30 \
@@ -74,14 +67,14 @@ python src/embedding/generate_embeddings.py \
 #### 3. Train Random Forest Model
 ```bash
 # Train with random negative sampling
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CCDD \
     --ground-truth "ground_truth/Indications List.csv" \
     --embeddings-version embeddings_0 \
     --negative-ratio 1
 
 # Or train with contraindications as negatives
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CCDD \
     --ground-truth "ground_truth/Indications List.csv" \
     --contraindications "ground_truth/Contraindications List.csv" \
@@ -91,7 +84,7 @@ python src/modeling/train_model.py \
 #### 4. Evaluate Model Performance
 ```bash
 # Comprehensive ranking-based evaluation
-python src/modeling/evaluate_model.py \
+uv run python src/modeling/evaluate_model.py \
     --model-dir graphs/robokop_base_nonredundant_CCDD/embeddings/embeddings_0/models/model_0
 ```
 
@@ -100,13 +93,10 @@ python src/modeling/evaluate_model.py \
 The project includes a Flask web application for interactive visualization and comparison of model evaluation results:
 
 ```bash
-# Install Flask dependency
-pip install flask
-
 # Launch the web interface
 ./run_app.sh
 # Or directly:
-python app.py
+uv run simplepredictions-web
 ```
 
 Then navigate to **http://localhost:5001** in your browser.

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simplepredictions"
+version = "0.1.0"
+description = "Biomedical knowledge graph link prediction with PecanPy and Random Forest models."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "flask>=3.0",
+    "jsonlines>=4.0",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pecanpy>=2.0.9",
+    "requests>=2.32",
+    "scikit-learn>=1.5",
+    "seaborn>=0.13",
+    "shap>=0.46",
+]
+
+[project.scripts]
+simplepredictions-web = "app:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=7.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

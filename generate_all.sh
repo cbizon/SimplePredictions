@@ -1,6 +1,5 @@
 #!/bin/bash
 set -e
-export PATH="/opt/anaconda3/envs/simplepredictions/bin:$PATH"
 
 # Usage: ./generate_all.sh <filter_style>
 # Example: ./generate_all.sh human_only
@@ -34,8 +33,8 @@ echo "Step 3: Training model..."
 
 # Evaluate individual models
 echo "Step 4: Evaluating model..."
-python src/modeling/evaluate_model.py --model-dir graphs/robokop_base_nonredundant_"$FILTER_STYLE"/embeddings/embeddings_1/models/model_0 --shap-top-k 0
-python src/modeling/evaluate_model.py --model-dir graphs/robokop_base_nonredundant_"$FILTER_STYLE"/embeddings/embeddings_2/models/model_0 --shap-top-k 0
+uv run python src/modeling/evaluate_model.py --model-dir graphs/robokop_base_nonredundant_"$FILTER_STYLE"/embeddings/embeddings_1/models/model_0 --shap-top-k 0
+uv run python src/modeling/evaluate_model.py --model-dir graphs/robokop_base_nonredundant_"$FILTER_STYLE"/embeddings/embeddings_2/models/model_0 --shap-top-k 0
 
 echo ""
 echo "=== Pipeline complete for filter style: $FILTER_STYLE ==="
