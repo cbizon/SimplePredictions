@@ -63,6 +63,20 @@ def sample_ground_truth_file():
 
 
 @pytest.fixture
+def sample_gene_disease_ground_truth_file():
+    """Create a sample gene-disease ground truth CSV file with generic column names."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+        f.write("gene_id,disease_id,evidence\n")
+        f.write("HGNC:789,MONDO:456,edge1\n")
+        f.write("HGNC:789,MONDO:123,edge2\n")
+        f.write("HGNC:999,MONDO:123,edge3\n")
+        temp_path = f.name
+
+    yield temp_path
+    os.unlink(temp_path)
+
+
+@pytest.fixture
 def sample_contraindications_file():
     """Create a sample contraindications CSV file."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
@@ -253,6 +267,26 @@ def test_load_ground_truth_with_embedding_filter(sample_ground_truth_file, sampl
     assert ("CHEBI:123", "MONDO:456") in positive_pairs
     
     assert stats["final_positive_pairs"] == len(positive_pairs)
+
+
+def test_load_ground_truth_generic_columns(sample_gene_disease_ground_truth_file, sample_embeddings):
+    """Test loading ground truth from arbitrary source/target columns."""
+    positive_pairs, stats = load_ground_truth(
+        sample_gene_disease_ground_truth_file,
+        sample_embeddings,
+        source_column="gene_id",
+        target_column="disease_id",
+        source_label="gene",
+        target_label="disease"
+    )
+
+    assert ("HGNC:789", "MONDO:456") in positive_pairs
+    assert ("HGNC:789", "MONDO:123") in positive_pairs
+    assert ("HGNC:999", "MONDO:123") not in positive_pairs
+    assert stats["source_column"] == "gene_id"
+    assert stats["target_column"] == "disease_id"
+    assert stats["source_label"] == "gene"
+    assert stats["target_label"] == "disease"
 
 
 def test_load_ground_truth_missing_columns():

@@ -274,6 +274,154 @@ def keep_no_text_mined(edge, typemap):
     return False
 
 
+def has_low_affinity_bindingdb_affects(edge):
+    """Check if an edge is a low-affinity BindingDB affects edge."""
+    if edge.get("predicate") != "biolink:affects":
+        return False
+
+    primary_ks = edge.get("primary_knowledge_source", "")
+    if "bindingdb" not in primary_ks.lower():
+        return False
+
+    affinity = edge.get("affinity")
+    if affinity is None:
+        return False
+
+    try:
+        return float(affinity) < 7
+    except (ValueError, TypeError):
+        return False
+
+
+def has_gd_edge(edge, typemap):
+    """Check if an edge is directly between a Gene and Disease/Phenotype node."""
+    subj_types = typemap.get(edge["subject"], set())
+    obj_types = typemap.get(edge["object"], set())
+
+    return (
+        ("biolink:Gene" in subj_types and "biolink:DiseaseOrPhenotypicFeature" in obj_types) or
+        ("biolink:DiseaseOrPhenotypicFeature" in subj_types and "biolink:Gene" in obj_types)
+    )
+
+
+def has_sequence_variant_node(edge, typemap):
+    """Check if either endpoint is a SequenceVariant node."""
+    subj_types = typemap.get(edge["subject"], set())
+    obj_types = typemap.get(edge["object"], set())
+    return "biolink:SequenceVariant" in subj_types or "biolink:SequenceVariant" in obj_types
+
+
+def has_variant_gene_edge(edge, typemap):
+    """Check if an edge connects a SequenceVariant and Gene."""
+    subj_types = typemap.get(edge["subject"], set())
+    obj_types = typemap.get(edge["object"], set())
+
+    return (
+        ("biolink:SequenceVariant" in subj_types and "biolink:Gene" in obj_types) or
+        ("biolink:Gene" in subj_types and "biolink:SequenceVariant" in obj_types)
+    )
+
+
+def has_variant_disease_edge(edge, typemap):
+    """Check if an edge connects a SequenceVariant and Disease/Phenotype."""
+    subj_types = typemap.get(edge["subject"], set())
+    obj_types = typemap.get(edge["object"], set())
+
+    return (
+        ("biolink:SequenceVariant" in subj_types and "biolink:DiseaseOrPhenotypicFeature" in obj_types) or
+        ("biolink:DiseaseOrPhenotypicFeature" in subj_types and "biolink:SequenceVariant" in obj_types)
+    )
+
+
+def _gd_variant_experiment_filter(edge, typemap, allow_gd=False, variant_mode="none", allow_nearby_variant=True, low_degree_nodes=None):
+    """Shared filter for gene-disease variant ablation experiments.
+
+    All experiment styles remove:
+    1. `biolink:subclass_of` edges
+    2. text-mined edges (`agent_type=text_mining_agent`)
+    3. low-affinity BindingDB `affects` edges
+    4. degree-1 nodes in a second pass when `low_degree_nodes` is provided
+
+    They then differ in whether direct Gene-Disease edges are allowed and which
+    SequenceVariant edges are retained.
+    """
+    if edge.get("predicate") == "biolink:subclass_of":
+        return True
+
+    if keep_no_text_mined(edge, typemap):
+        return True
+
+    if has_low_affinity_bindingdb_affects(edge):
+        return True
+
+    if low_degree_nodes is not None:
+        if edge["subject"] in low_degree_nodes or edge["object"] in low_degree_nodes:
+            return True
+
+    if has_gd_edge(edge, typemap) and not allow_gd:
+        return True
+
+    if not has_sequence_variant_node(edge, typemap):
+        return False
+
+    if edge.get("predicate") == "biolink:is_nearby_variant_of" and not allow_nearby_variant:
+        return True
+
+    if variant_mode == "none":
+        return True
+
+    if variant_mode == "gene_only":
+        return not has_variant_gene_edge(edge, typemap)
+
+    if variant_mode == "disease_only":
+        return not has_variant_disease_edge(edge, typemap)
+
+    if variant_mode == "full":
+        return not (
+            has_variant_gene_edge(edge, typemap) or
+            has_variant_disease_edge(edge, typemap)
+        )
+
+    raise ValueError(f"Unknown variant_mode: {variant_mode}")
+
+
+def keep_GD_no_variants(edge, typemap, low_degree_nodes=None):
+    """Baseline GD experiment graph with no variant-mediated edges."""
+    return _gd_variant_experiment_filter(edge, typemap, allow_gd=False, variant_mode="none", low_degree_nodes=low_degree_nodes)
+
+
+def keep_GD_variant_gene_only(edge, typemap, low_degree_nodes=None):
+    """Keep only SequenceVariant-Gene edges from the variant subgraph."""
+    return _gd_variant_experiment_filter(edge, typemap, allow_gd=False, variant_mode="gene_only", low_degree_nodes=low_degree_nodes)
+
+
+def keep_GD_variant_disease_only(edge, typemap, low_degree_nodes=None):
+    """Keep only SequenceVariant-Disease edges from the variant subgraph."""
+    return _gd_variant_experiment_filter(edge, typemap, allow_gd=False, variant_mode="disease_only", low_degree_nodes=low_degree_nodes)
+
+
+def keep_GD_variant_full(edge, typemap, low_degree_nodes=None):
+    """Keep SequenceVariant-Gene and SequenceVariant-Disease edges."""
+    return _gd_variant_experiment_filter(edge, typemap, allow_gd=False, variant_mode="full", low_degree_nodes=low_degree_nodes)
+
+
+def keep_GD_variant_full_no_nearby(edge, typemap, low_degree_nodes=None):
+    """Keep variant support edges but exclude `is_nearby_variant_of` links."""
+    return _gd_variant_experiment_filter(
+        edge,
+        typemap,
+        allow_gd=False,
+        variant_mode="full",
+        allow_nearby_variant=False,
+        low_degree_nodes=low_degree_nodes
+    )
+
+
+def keep_GD_variant_full_with_gd(edge, typemap, low_degree_nodes=None):
+    """Leakage sentinel: keep direct GD edges plus full retained variant support."""
+    return _gd_variant_experiment_filter(edge, typemap, allow_gd=True, variant_mode="full", low_degree_nodes=low_degree_nodes)
+
+
 def keep_human_only_no_text_mined(edge, typemap, nonhuman_ids=None, organism_taxon_ids=None, nonhuman_reactome_ids=None, nonhuman_disease_ids=None):
     """Filter to keep only human content without text-mined edges.
 
@@ -370,19 +518,8 @@ def multi_filter_1(edge, typemap, nonhuman_ids=None, organism_taxon_ids=None, no
         return True
 
     # 2. Filter BindingDB affects edges with affinity < 7
-    if edge.get("predicate") == "biolink:affects":
-        # Check if this is from BindingDB
-        primary_ks = edge.get("primary_knowledge_source", "")
-        if "bindingdb" in primary_ks.lower():
-            # Check for affinity attribute
-            affinity = edge.get("affinity")
-            if affinity is not None:
-                try:
-                    affinity_value = float(affinity)
-                    if affinity_value < 7:
-                        return True  # Filter out low affinity
-                except (ValueError, TypeError):
-                    pass
+    if has_low_affinity_bindingdb_affects(edge):
+        return True  # Filter out low affinity
 
     # 3. Filter subclass_of edges between two NCIT nodes
     if edge.get("predicate") == "biolink:subclass_of":
@@ -642,7 +779,13 @@ GRAPH_DESCRIPTIONS = {
     "CCDD_with_subclass_with_cd_treats": "CCDD with subclass and Chemical-Disease treats edges only (partial leakage analysis).",
     "CGD_with_cd_treats": "CGD with Chemical-Disease treats edges only (partial leakage analysis).",
     "CGD_with_subclass_with_cd_treats": "CGD with subclass and Chemical-Disease treats edges only (partial leakage analysis).",
-    "multi_filter_1_hgt": "Multi-filter: human-only + no text-mining + BindingDB affinity<7 removed + NCIT-to-NCIT subclass_of removed + degree 1-2 nodes removed + CD edges kept. TSV output for DGL with pseudo-predicates from qualifiers."
+    "multi_filter_1_hgt": "Multi-filter: human-only + no text-mining + BindingDB affinity<7 removed + NCIT-to-NCIT subclass_of removed + degree 1-2 nodes removed + CD edges kept. TSV output for DGL with pseudo-predicates from qualifiers.",
+    "GD_no_variants": "Gene-disease experiment baseline: remove subclass_of, text-mined edges, BindingDB affects edges with affinity<7, degree-1 nodes, direct Gene-Disease edges, and all SequenceVariant edges.",
+    "GD_variant_gene_only": "Gene-disease experiment: remove subclass_of, text-mined edges, BindingDB affects edges with affinity<7, degree-1 nodes, direct Gene-Disease edges, and keep only SequenceVariant-Gene edges from the variant subgraph.",
+    "GD_variant_disease_only": "Gene-disease experiment: remove subclass_of, text-mined edges, BindingDB affects edges with affinity<7, degree-1 nodes, direct Gene-Disease edges, and keep only SequenceVariant-Disease edges from the variant subgraph.",
+    "GD_variant_full": "Gene-disease experiment: remove subclass_of, text-mined edges, BindingDB affects edges with affinity<7, degree-1 nodes, direct Gene-Disease edges, and keep SequenceVariant-Gene plus SequenceVariant-Disease edges.",
+    "GD_variant_full_no_nearby": "Gene-disease experiment: same as GD_variant_full but excludes biolink:is_nearby_variant_of edges.",
+    "GD_variant_full_with_gd": "Gene-disease leakage sentinel: same as GD_variant_full but keeps direct Gene-Disease edges."
 }
 
 
@@ -700,6 +843,7 @@ def create_robokop_input(input_base_dir,
     use_fake_genes = False
     use_human_filter = False
     use_two_pass = False
+    low_degree_threshold = 2
     use_hgt_output = (output_format == "hgt")
     use_kgx_output = (output_format == "kgx")
     base_filter = None
@@ -780,6 +924,30 @@ def create_robokop_input(input_base_dir,
             base_filter = keep_CGD_with_cd_treats
         elif style == "CGD_with_subclass_with_cd_treats":
             base_filter = keep_CGD_with_subclass_with_cd_treats
+        elif style == "GD_no_variants":
+            base_filter = keep_GD_no_variants
+            use_two_pass = True
+            low_degree_threshold = 1
+        elif style == "GD_variant_gene_only":
+            base_filter = keep_GD_variant_gene_only
+            use_two_pass = True
+            low_degree_threshold = 1
+        elif style == "GD_variant_disease_only":
+            base_filter = keep_GD_variant_disease_only
+            use_two_pass = True
+            low_degree_threshold = 1
+        elif style == "GD_variant_full":
+            base_filter = keep_GD_variant_full
+            use_two_pass = True
+            low_degree_threshold = 1
+        elif style == "GD_variant_full_no_nearby":
+            base_filter = keep_GD_variant_full_no_nearby
+            use_two_pass = True
+            low_degree_threshold = 1
+        elif style == "GD_variant_full_with_gd":
+            base_filter = keep_GD_variant_full_with_gd
+            use_two_pass = True
+            low_degree_threshold = 1
         else:
             if style not in GRAPH_DESCRIPTIONS:
                 raise ValueError(f"Unknown graph style '{style}'. Available styles: {list(GRAPH_DESCRIPTIONS.keys())}")
@@ -897,8 +1065,8 @@ def create_robokop_input(input_base_dir,
                         node_degrees[parts[1]] += 1
 
         # Find low-degree nodes (degree 1 or 2)
-        low_degree_nodes = {node for node, degree in node_degrees.items() if degree <= 2}
-        print(f"Found {len(low_degree_nodes):,} nodes with degree <= 2")
+        low_degree_nodes = {node for node, degree in node_degrees.items() if degree <= low_degree_threshold}
+        print(f"Found {len(low_degree_nodes):,} nodes with degree <= {low_degree_threshold}")
 
         # Add low_degree_nodes to filter_kwargs for second pass
         filter_kwargs["low_degree_nodes"] = low_degree_nodes
@@ -932,6 +1100,8 @@ def create_robokop_input(input_base_dir,
         "filter_function": remove_edge.__name__ if hasattr(remove_edge, '__name__') else str(remove_edge),
         "description": GRAPH_DESCRIPTIONS[style]
     }
+    if use_two_pass:
+        provenance["low_degree_threshold"] = low_degree_threshold
     
     # Add fake gene info to provenance if applicable
     if use_fake_genes:
@@ -1200,17 +1370,8 @@ def multi_filter_1_with_cd(edge, typemap, nonhuman_ids=None, organism_taxon_ids=
         return True
 
     # 2. Filter BindingDB affects edges with affinity < 7
-    if edge.get("predicate") == "biolink:affects":
-        primary_ks = edge.get("primary_knowledge_source", "")
-        if "bindingdb" in primary_ks.lower():
-            affinity = edge.get("affinity")
-            if affinity is not None:
-                try:
-                    affinity_value = float(affinity)
-                    if affinity_value < 7:
-                        return True
-                except (ValueError, TypeError):
-                    pass
+    if has_low_affinity_bindingdb_affects(edge):
+        return True
 
     # 3. Filter subclass_of edges between two NCIT nodes
     if edge.get("predicate") == "biolink:subclass_of":
@@ -1403,7 +1564,9 @@ def main():
                                "CFGD", "CFGD_with_subclass", "CCFD", "CCFD_with_subclass",
                                "CCDD_with_cd", "CCDD_with_subclass_with_cd", "CGD_with_cd", "CGD_with_subclass_with_cd",
                                "CCDD_with_cd_treats", "CCDD_with_subclass_with_cd_treats",
-                               "CGD_with_cd_treats", "CGD_with_subclass_with_cd_treats"],
+                               "CGD_with_cd_treats", "CGD_with_subclass_with_cd_treats",
+                               "GD_no_variants", "GD_variant_gene_only", "GD_variant_disease_only",
+                               "GD_variant_full", "GD_variant_full_no_nearby", "GD_variant_full_with_gd"],
                        help="Graph filtering style (CD removed to prevent data leakage, except _with_cd variants)")
     parser.add_argument("--input-dir", default="input_graphs/robokop_base_nonredundant",
                        help="Base directory containing input graph files")
@@ -1443,4 +1606,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
