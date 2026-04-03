@@ -1,6 +1,5 @@
 #!/bin/bash
 set -e
-export PATH="/opt/anaconda3/envs/simplepredictions/bin:$PATH"
 
 # Treats-Only CD Edge Analysis Script
 # This script creates graphs with only treats CD edges included to analyze
@@ -23,10 +22,10 @@ echo ""
 echo "PHASE 1: Creating graphs..."
 echo "----------------------------"
 
-python src/graph_modification/create_robokop_input.py --style CCDD_with_cd_treats
-python src/graph_modification/create_robokop_input.py --style CCDD_with_subclass_with_cd_treats
-python src/graph_modification/create_robokop_input.py --style CGD_with_cd_treats
-python src/graph_modification/create_robokop_input.py --style CGD_with_subclass_with_cd_treats
+uv run python src/graph_modification/create_robokop_input.py --style CCDD_with_cd_treats
+uv run python src/graph_modification/create_robokop_input.py --style CCDD_with_subclass_with_cd_treats
+uv run python src/graph_modification/create_robokop_input.py --style CGD_with_cd_treats
+uv run python src/graph_modification/create_robokop_input.py --style CGD_with_subclass_with_cd_treats
 
 echo "✓ Graphs created"
 echo ""
@@ -40,10 +39,10 @@ echo "----------------------------------"
 # Standard embedding parameters for all graphs
 EMBEDDING_PARAMS="--dimensions 512 --walk-length 30 --num-walks 10 --window-size 10 --p 1 --q 1"
 
-python src/embedding/generate_embeddings.py --graph-file graphs/robokop_base_nonredundant_CCDD_with_cd_treats/graph/edges.edg $EMBEDDING_PARAMS
-python src/embedding/generate_embeddings.py --graph-file graphs/robokop_base_nonredundant_CCDD_with_subclass_with_cd_treats/graph/edges.edg $EMBEDDING_PARAMS
-python src/embedding/generate_embeddings.py --graph-file graphs/robokop_base_nonredundant_CGD_with_cd_treats/graph/edges.edg $EMBEDDING_PARAMS
-python src/embedding/generate_embeddings.py --graph-file graphs/robokop_base_nonredundant_CGD_with_subclass_with_cd_treats/graph/edges.edg $EMBEDDING_PARAMS
+uv run python src/embedding/generate_embeddings.py --graph-file graphs/robokop_base_nonredundant_CCDD_with_cd_treats/graph/edges.edg $EMBEDDING_PARAMS
+uv run python src/embedding/generate_embeddings.py --graph-file graphs/robokop_base_nonredundant_CCDD_with_subclass_with_cd_treats/graph/edges.edg $EMBEDDING_PARAMS
+uv run python src/embedding/generate_embeddings.py --graph-file graphs/robokop_base_nonredundant_CGD_with_cd_treats/graph/edges.edg $EMBEDDING_PARAMS
+uv run python src/embedding/generate_embeddings.py --graph-file graphs/robokop_base_nonredundant_CGD_with_subclass_with_cd_treats/graph/edges.edg $EMBEDDING_PARAMS
 
 echo "✓ Embeddings generated"
 echo ""
@@ -62,28 +61,28 @@ EMBEDDINGS_VERSION="embeddings_0"
 RANDOM_SEED=42
 
 echo "Training with random negatives..."
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CCDD_with_cd_treats \
     --ground-truth "$GROUND_TRUTH" \
     --embeddings-version $EMBEDDINGS_VERSION \
     --negative-ratio 1 \
     --random-state $RANDOM_SEED &
 
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CCDD_with_subclass_with_cd_treats \
     --ground-truth "$GROUND_TRUTH" \
     --embeddings-version $EMBEDDINGS_VERSION \
     --negative-ratio 1 \
     --random-state $RANDOM_SEED &
 
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CGD_with_cd_treats \
     --ground-truth "$GROUND_TRUTH" \
     --embeddings-version $EMBEDDINGS_VERSION \
     --negative-ratio 1 \
     --random-state $RANDOM_SEED &
 
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CGD_with_subclass_with_cd_treats \
     --ground-truth "$GROUND_TRUTH" \
     --embeddings-version $EMBEDDINGS_VERSION \
@@ -93,28 +92,28 @@ python src/modeling/train_model.py \
 wait
 
 echo "Training with contraindication negatives..."
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CCDD_with_cd_treats \
     --ground-truth "$GROUND_TRUTH" \
     --contraindications "$CONTRAINDICATIONS" \
     --embeddings-version $EMBEDDINGS_VERSION \
     --random-state $RANDOM_SEED &
 
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CCDD_with_subclass_with_cd_treats \
     --ground-truth "$GROUND_TRUTH" \
     --contraindications "$CONTRAINDICATIONS" \
     --embeddings-version $EMBEDDINGS_VERSION \
     --random-state $RANDOM_SEED &
 
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CGD_with_cd_treats \
     --ground-truth "$GROUND_TRUTH" \
     --contraindications "$CONTRAINDICATIONS" \
     --embeddings-version $EMBEDDINGS_VERSION \
     --random-state $RANDOM_SEED &
 
-python src/modeling/train_model.py \
+uv run python src/modeling/train_model.py \
     --graph-dir graphs/robokop_base_nonredundant_CGD_with_subclass_with_cd_treats \
     --ground-truth "$GROUND_TRUTH" \
     --contraindications "$CONTRAINDICATIONS" \

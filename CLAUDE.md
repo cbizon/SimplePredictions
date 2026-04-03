@@ -7,21 +7,14 @@ We are working on biomedical knowledge graphs.  Our goal is to be able to make g
 ## Basic Setup
 
 * **github**: This project has a github repo at https://github.com/cbizon/SimplePredictions
-* **conda**: we are using conda environment "simplepredictions" (located at /opt/anaconda3/envs/simplepredictions)
+* **uv**: we are using `uv` to manage the project environment and dependencies
 * **tests**: we are using pytest, and want to maintain high code coverage
 
 ## Environment Setup
 
 ```bash
-# Create and activate conda environment
-conda create -n simplepredictions python=3.11
-conda activate simplepredictions
-
-# Install core dependencies
-conda install scikit-learn pandas numpy matplotlib seaborn
-
-# Install specialized packages
-pip install pecanpy jsonlines flask shap
+# Create the project environment and install dependencies
+uv sync
 ```
 
 ## Key Dependencies
@@ -112,7 +105,7 @@ Note the subject/object/predicate structure. The subject and object are defined 
 
 ## Analysis
 
-To perform node2vec we are going to use pecanpy, which is installed in our conda environment.
+To perform node2vec we are going to use pecanpy, which is installed in the `uv` environment.
 Information about pecanpy can be found at https://github.com/krishnanlab/PecanPy
 
 Our base parameters for pecanpy are: --dimensions 512 --walk-length 30 --num-walks 10 --window-size 10 --p 1 --q 1
@@ -298,7 +291,7 @@ The project includes a Flask web application (`app.py`) for interactive visualiz
 
 **Usage**:
 ```bash
-# Launch webapp (use conda environment)
+# Launch webapp
 ./run_app.sh
 # Navigate to http://localhost:5001
 
@@ -316,7 +309,7 @@ python app.py
 
 **Web Interface**:
 - `app.py`: Flask web application for interactive model visualization and comparison
-- `run_app.sh`: Script to launch webapp with conda environment
+- `run_app.sh`: Script to launch the webapp with `uv`
 
 ## Step-by-Step Pipeline Usage
 
