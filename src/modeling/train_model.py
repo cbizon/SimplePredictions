@@ -108,12 +108,23 @@ def load_embeddings(embeddings_file):
     return embeddings
 
 
-def load_ground_truth(ground_truth_file, embeddings=None):
-    """Load ground truth Drug-Disease pairs from Indication list.
+def load_ground_truth(
+    ground_truth_file,
+    embeddings=None,
+    source_column='final normalized drug id',
+    target_column='final normalized disease id',
+    source_label='drug',
+    target_label='disease'
+):
+    """Load positive pairs from a CSV file.
     
     Args:
-        ground_truth_file: Path to comma-delimited file with drug and disease columns
+        ground_truth_file: Path to comma-delimited file with source and target columns
         embeddings: Dict of embeddings to filter against (optional)
+        source_column: CSV column containing the source node ID
+        target_column: CSV column containing the target node ID
+        source_label: Human-readable label for the source node type
+        target_label: Human-readable label for the target node type
         
     Returns:
         tuple: (positive_pairs, ground_truth_stats)
@@ -123,38 +134,42 @@ def load_ground_truth(ground_truth_file, embeddings=None):
     print(f"Available columns: {list(df.columns)}")
     print(f"File shape: {df.shape}")
     
-    # Use the specific column names from the indication list file
-    drug_col = 'final normalized drug id'
-    disease_col = 'final normalized disease id'
-    
-    if drug_col not in df.columns or disease_col not in df.columns:
-        raise ValueError(f"Expected columns '{drug_col}' and '{disease_col}' in {ground_truth_file}. "
+    if source_column not in df.columns or target_column not in df.columns:
+        raise ValueError(f"Expected columns '{source_column}' and '{target_column}' in {ground_truth_file}. "
                         f"Available columns: {list(df.columns)}")
     
-    print(f"Using drug column: '{drug_col}' and disease column: '{disease_col}'")
+    print(f"Using source column: '{source_column}' and target column: '{target_column}'")
     
     # Remove rows with missing values
-    df_clean = df[[drug_col, disease_col]].dropna()
+    df_clean = df[[source_column, target_column]].dropna()
     initial_count = len(df_clean)
     
     # Filter to only include pairs where both drug and disease have embeddings
     if embeddings is not None:
         print(f"Filtering ground truth to only include nodes with embeddings...")
         df_clean = df_clean[
-            df_clean[drug_col].isin(embeddings) & 
-            df_clean[disease_col].isin(embeddings)
+            df_clean[source_column].isin(embeddings) &
+            df_clean[target_column].isin(embeddings)
         ]
         print(f"Filtered from {initial_count} to {len(df_clean)} pairs with embeddings")
     
-    positive_pairs = set(zip(df_clean[drug_col], df_clean[disease_col]))
+    positive_pairs = set(zip(df_clean[source_column], df_clean[target_column]))
+    unique_sources = len(set(pair[0] for pair in positive_pairs))
+    unique_targets = len(set(pair[1] for pair in positive_pairs))
     
     ground_truth_stats = {
         "ground_truth_file": ground_truth_file,
         "total_rows": len(df),
         "clean_rows": initial_count,
         "final_positive_pairs": len(positive_pairs),
-        "unique_drugs": len(set(pair[0] for pair in positive_pairs)),
-        "unique_diseases": len(set(pair[1] for pair in positive_pairs))
+        "unique_drugs": unique_sources,
+        "unique_diseases": unique_targets,
+        "unique_sources": unique_sources,
+        "unique_targets": unique_targets,
+        "source_column": source_column,
+        "target_column": target_column,
+        "source_label": source_label,
+        "target_label": target_label
     }
     
     print(f"Final positive pairs: {len(positive_pairs)}")
@@ -207,12 +222,23 @@ def create_feature_vectors(embeddings, drug_disease_pairs, pad_missing=False):
     return np.array(features), pair_labels
 
 
-def load_contraindications(contraindications_file, embeddings=None):
-    """Load contraindications as negative Drug-Disease pairs.
+def load_contraindications(
+    contraindications_file,
+    embeddings=None,
+    source_column='final normalized drug id',
+    target_column='final normalized disease id',
+    source_label='drug',
+    target_label='disease'
+):
+    """Load contraindications as negative pairs.
     
     Args:
         contraindications_file: Path to contraindications CSV file
         embeddings: Dict of embeddings to filter against (optional)
+        source_column: CSV column containing the source node ID
+        target_column: CSV column containing the target node ID
+        source_label: Human-readable label for the source node type
+        target_label: Human-readable label for the target node type
         
     Returns:
         tuple: (negative_pairs, contraindications_stats)
@@ -222,38 +248,42 @@ def load_contraindications(contraindications_file, embeddings=None):
     print(f"Contraindications columns: {list(df.columns)}")
     print(f"Contraindications file shape: {df.shape}")
     
-    # Use the specific column names from the contraindications file
-    drug_col = 'final normalized drug id'
-    disease_col = 'final normalized disease id'
-    
-    if drug_col not in df.columns or disease_col not in df.columns:
-        raise ValueError(f"Expected columns '{drug_col}' and '{disease_col}' in {contraindications_file}. "
+    if source_column not in df.columns or target_column not in df.columns:
+        raise ValueError(f"Expected columns '{source_column}' and '{target_column}' in {contraindications_file}. "
                         f"Available columns: {list(df.columns)}")
     
-    print(f"Using contraindications drug column: '{drug_col}' and disease column: '{disease_col}'")
+    print(f"Using contraindications source column: '{source_column}' and target column: '{target_column}'")
     
     # Remove rows with missing values
-    df_clean = df[[drug_col, disease_col]].dropna()
+    df_clean = df[[source_column, target_column]].dropna()
     initial_count = len(df_clean)
     
     # Filter to only include pairs where both drug and disease have embeddings
     if embeddings is not None:
         print(f"Filtering contraindications to only include nodes with embeddings...")
         df_clean = df_clean[
-            df_clean[drug_col].isin(embeddings) & 
-            df_clean[disease_col].isin(embeddings)
+            df_clean[source_column].isin(embeddings) &
+            df_clean[target_column].isin(embeddings)
         ]
         print(f"Filtered contraindications from {initial_count} to {len(df_clean)} pairs with embeddings")
     
-    negative_pairs = set(zip(df_clean[drug_col], df_clean[disease_col]))
+    negative_pairs = set(zip(df_clean[source_column], df_clean[target_column]))
+    unique_sources = len(set(pair[0] for pair in negative_pairs))
+    unique_targets = len(set(pair[1] for pair in negative_pairs))
     
     contraindications_stats = {
         "contraindications_file": contraindications_file,
         "total_rows": len(df),
         "clean_rows": initial_count,
         "final_negative_pairs": len(negative_pairs),
-        "unique_drugs": len(set(pair[0] for pair in negative_pairs)),
-        "unique_diseases": len(set(pair[1] for pair in negative_pairs))
+        "unique_drugs": unique_sources,
+        "unique_diseases": unique_targets,
+        "unique_sources": unique_sources,
+        "unique_targets": unique_targets,
+        "source_column": source_column,
+        "target_column": target_column,
+        "source_label": source_label,
+        "target_label": target_label
     }
     
     print(f"Final contraindication pairs: {len(negative_pairs)}")
@@ -313,7 +343,11 @@ def train_model(graph_dir,
                                n_estimators=100,
                                max_depth=10,
                                random_state=42,
-                               contraindications_file=None):
+                               contraindications_file=None,
+                               source_column='final normalized drug id',
+                               target_column='final normalized disease id',
+                               source_label='drug',
+                               target_label='disease'):
     """Train model with automatic versioning and provenance.
     
     Args:
@@ -325,6 +359,10 @@ def train_model(graph_dir,
         max_depth: Maximum depth of trees
         random_state: Random state for reproducibility
         contraindications_file: Path to contraindications CSV file (if provided, uses contraindications as negatives instead of generating them)
+        source_column: CSV column containing the source node ID
+        target_column: CSV column containing the target node ID
+        source_label: Human-readable label for the source node type
+        target_label: Human-readable label for the target node type
         
     Returns:
         str: Path to the generated model directory
@@ -365,7 +403,14 @@ def train_model(graph_dir,
     embeddings = load_embeddings(embeddings_file)
     
     # Load ground truth - filter to only nodes with embeddings
-    positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
+    positive_pairs, ground_truth_stats = load_ground_truth(
+        ground_truth_file,
+        embeddings,
+        source_column=source_column,
+        target_column=target_column,
+        source_label=source_label,
+        target_label=target_label
+    )
     
     # Extract drug and disease IDs from filtered positive examples
     drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
@@ -379,7 +424,14 @@ def train_model(graph_dir,
     # Generate negative samples
     if contraindications_file:
         print(f"Using contraindications from: {contraindications_file}")
-        negative_pairs, contraindications_stats = load_contraindications(contraindications_file, embeddings)
+        negative_pairs, contraindications_stats = load_contraindications(
+            contraindications_file,
+            embeddings,
+            source_column=source_column,
+            target_column=target_column,
+            source_label=source_label,
+            target_label=target_label
+        )
         # Remove any overlap with positive pairs
         original_negatives = len(negative_pairs)
         negative_pairs = negative_pairs - positive_pairs
@@ -479,7 +531,13 @@ def train_model(graph_dir,
             "embedding_info": embedding_info,
             "ground_truth": ground_truth_stats,
             "contraindications": contraindications_stats,
-            "negative_sampling_method": "contraindications" if contraindications_file else "random_generation"
+            "negative_sampling_method": "contraindications" if contraindications_file else "random_generation",
+            "pair_schema": {
+                "source_column": source_column,
+                "target_column": target_column,
+                "source_label": source_label,
+                "target_label": target_label
+            }
         },
         "model_parameters": {
             "n_estimators": n_estimators,
@@ -557,6 +615,14 @@ def main():
                        help="Random state for reproducibility (default: 42)")
     parser.add_argument("--contraindications", 
                        help="Path to contraindications CSV file (use contraindications as negatives instead of generating random negatives)")
+    parser.add_argument("--source-column", default="final normalized drug id",
+                       help="CSV column containing the source node ID (default: final normalized drug id)")
+    parser.add_argument("--target-column", default="final normalized disease id",
+                       help="CSV column containing the target node ID (default: final normalized disease id)")
+    parser.add_argument("--source-label", default="drug",
+                       help="Human-readable label for the source node type (default: drug)")
+    parser.add_argument("--target-label", default="disease",
+                       help="Human-readable label for the target node type (default: disease)")
     
     args = parser.parse_args()
     
@@ -568,7 +634,11 @@ def main():
         n_estimators=args.n_estimators,
         max_depth=args.max_depth,
         random_state=args.random_state,
-        contraindications_file=args.contraindications
+        contraindications_file=args.contraindications,
+        source_column=args.source_column,
+        target_column=args.target_column,
+        source_label=args.source_label,
+        target_label=args.target_label
     )
     
     print(f"\nModel training complete!")

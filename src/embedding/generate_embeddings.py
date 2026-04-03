@@ -135,7 +135,9 @@ def generate_embeddings(graph_file,
                        window_size=10,
                        p=1,
                        q=1,
-                       workers=4):
+                       workers=4,
+                       mode=None,
+                       version_name=None):
     """Generate node2vec embeddings with automatic versioning and provenance.
     
     Args:
@@ -147,6 +149,8 @@ def generate_embeddings(graph_file,
         p: Return parameter
         q: In-out parameter
         workers: Number of parallel workers
+        mode: Optional pecanpy execution mode
+        version_name: Optional explicit embeddings version directory name
         
     Returns:
         str: Path to the generated embeddings directory
@@ -163,9 +167,14 @@ def generate_embeddings(graph_file,
     # Create embeddings directory if it doesn't exist
     os.makedirs(embeddings_dir, exist_ok=True)
     
-    # Get next version number
-    version = get_next_embedding_version(embeddings_dir)
-    version_dir = os.path.join(embeddings_dir, f"embeddings_{version}")
+    # Get version directory
+    if version_name is None:
+        version = get_next_embedding_version(embeddings_dir)
+        version_name = f"embeddings_{version}"
+    else:
+        version = version_name
+
+    version_dir = os.path.join(embeddings_dir, version_name)
     os.makedirs(version_dir, exist_ok=True)
     
     # Output file path
@@ -192,6 +201,9 @@ def generate_embeddings(graph_file,
         "--q", str(q),
         "--workers", str(workers)
     ]
+
+    if mode:
+        cmd.extend(["--mode", mode])
     
     # Record start time
     start_time = datetime.now()
@@ -220,7 +232,7 @@ def generate_embeddings(graph_file,
         "timestamp": start_time.isoformat(),
         "duration_seconds": duration,
         "script": "generate_embeddings.py",
-        "version": f"embeddings_{version}",
+        "version": version_name,
         "algorithm": "node2vec",
         "tool": "pecanpy",
         "input_graph_file": graph_file,
@@ -233,7 +245,8 @@ def generate_embeddings(graph_file,
             "window_size": window_size,
             "p": p,
             "q": q,
-            "workers": workers
+            "workers": workers,
+            "mode": mode
         },
         "graph_info": {
             "edge_count": edge_count,
@@ -243,7 +256,7 @@ def generate_embeddings(graph_file,
             "stdout": result.stdout,
             "stderr": result.stderr
         },
-        "description": f"Node2vec embeddings version {version} generated from {os.path.basename(graph_file)}"
+        "description": f"Node2vec embeddings version {version_name} generated from {os.path.basename(graph_file)}"
     }
     
     # Save provenance file
@@ -277,6 +290,11 @@ def main():
                        help="In-out parameter (default: 1)")
     parser.add_argument("--workers", type=int, default=8,
                        help="Number of parallel workers (default: 8)")
+    parser.add_argument("--mode", type=str, default=None,
+                       choices=["DenseOTF", "FirstOrderUnweighted", "PreComp", "PreCompFirstOrder", "SparseOTF"],
+                       help="Optional pecanpy execution mode")
+    parser.add_argument("--version-name", type=str, default=None,
+                       help="Optional embeddings version directory name to reuse or create")
     
     args = parser.parse_args()
     
@@ -288,7 +306,9 @@ def main():
         window_size=args.window_size,
         p=args.p,
         q=args.q,
-        workers=args.workers
+        workers=args.workers,
+        mode=args.mode,
+        version_name=args.version_name
     )
     
     print(f"\nEmbedding generation complete!")

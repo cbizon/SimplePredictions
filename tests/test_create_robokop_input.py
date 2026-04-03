@@ -14,7 +14,9 @@ from src.graph_modification.create_robokop_input import (
     keep_CGD_with_cd, keep_CGD_with_subclass_with_cd,
     keep_human_only, collect_organism_taxon_nodes,
     keep_no_text_mined, keep_human_only_no_text_mined,
-    multi_filter_1_with_cd, write_hgt_input, write_kgx_output
+    multi_filter_1_with_cd, write_hgt_input, write_kgx_output,
+    keep_GD_no_variants, keep_GD_variant_gene_only, keep_GD_variant_disease_only,
+    keep_GD_variant_full, keep_GD_variant_full_no_nearby, keep_GD_variant_full_with_gd
 )
 
 
@@ -658,6 +660,125 @@ def test_keep_human_only_no_text_mined_combines_filters():
         "agent_type": "manual_agent"
     }
     assert keep_human_only_no_text_mined(valid_edge, typemap, nonhuman_ids, organism_taxon_ids) == False
+
+
+def test_keep_GD_no_variants_filters_direct_gd_and_all_variant_edges():
+    """GD_no_variants should keep baseline filtered graph without GD or variant edges."""
+    typemap = {
+        "HGNC:1": {"biolink:Gene"},
+        "MONDO:1": {"biolink:DiseaseOrPhenotypicFeature"},
+        "CAID:1": {"biolink:SequenceVariant"},
+        "CHEBI:1": {"biolink:ChemicalEntity"},
+        "CHEBI:2": {"biolink:ChemicalEntity"},
+    }
+
+    gd_edge = {"subject": "HGNC:1", "object": "MONDO:1", "predicate": "biolink:genetically_associated_with"}
+    vg_edge = {"subject": "CAID:1", "object": "HGNC:1", "predicate": "biolink:is_nearby_variant_of"}
+    cc_edge = {"subject": "CHEBI:1", "object": "CHEBI:2", "predicate": "biolink:related_to"}
+    text_mined_edge = {"subject": "CHEBI:1", "object": "CHEBI:2", "predicate": "biolink:related_to", "agent_type": "text_mining_agent"}
+    subclass_edge = {"subject": "MONDO:1", "object": "MONDO:2", "predicate": "biolink:subclass_of"}
+
+    assert keep_GD_no_variants(gd_edge, typemap) is True
+    assert keep_GD_no_variants(vg_edge, typemap) is True
+    assert keep_GD_no_variants(cc_edge, typemap) is False
+    assert keep_GD_no_variants(text_mined_edge, typemap) is True
+    assert keep_GD_no_variants(subclass_edge, typemap) is True
+
+
+def test_keep_GD_variant_gene_only_keeps_only_variant_gene_edges():
+    """GD_variant_gene_only should retain SequenceVariant-Gene support but not SequenceVariant-Disease."""
+    typemap = {
+        "HGNC:1": {"biolink:Gene"},
+        "MONDO:1": {"biolink:DiseaseOrPhenotypicFeature"},
+        "CAID:1": {"biolink:SequenceVariant"},
+    }
+
+    vg_edge = {"subject": "CAID:1", "object": "HGNC:1", "predicate": "biolink:is_nearby_variant_of"}
+    vd_edge = {"subject": "CAID:1", "object": "MONDO:1", "predicate": "biolink:has_phenotype"}
+
+    assert keep_GD_variant_gene_only(vg_edge, typemap) is False
+    assert keep_GD_variant_gene_only(vd_edge, typemap) is True
+
+
+def test_keep_GD_variant_disease_only_keeps_only_variant_disease_edges():
+    """GD_variant_disease_only should retain SequenceVariant-Disease support but not SequenceVariant-Gene."""
+    typemap = {
+        "HGNC:1": {"biolink:Gene"},
+        "MONDO:1": {"biolink:DiseaseOrPhenotypicFeature"},
+        "CAID:1": {"biolink:SequenceVariant"},
+    }
+
+    vg_edge = {"subject": "CAID:1", "object": "HGNC:1", "predicate": "biolink:is_nearby_variant_of"}
+    vd_edge = {"subject": "CAID:1", "object": "MONDO:1", "predicate": "biolink:has_phenotype"}
+
+    assert keep_GD_variant_disease_only(vg_edge, typemap) is True
+    assert keep_GD_variant_disease_only(vd_edge, typemap) is False
+
+
+def test_keep_GD_variant_full_no_nearby_filters_nearby_variant_edges():
+    """GD_variant_full_no_nearby should drop nearby-variant edges while keeping other retained variant edges."""
+    typemap = {
+        "HGNC:1": {"biolink:Gene"},
+        "MONDO:1": {"biolink:DiseaseOrPhenotypicFeature"},
+        "CAID:1": {"biolink:SequenceVariant"},
+    }
+
+    nearby_edge = {"subject": "CAID:1", "object": "HGNC:1", "predicate": "biolink:is_nearby_variant_of"}
+    phenotype_edge = {"subject": "CAID:1", "object": "MONDO:1", "predicate": "biolink:has_phenotype"}
+
+    assert keep_GD_variant_full(nearby_edge, typemap) is False
+    assert keep_GD_variant_full_no_nearby(nearby_edge, typemap) is True
+    assert keep_GD_variant_full_no_nearby(phenotype_edge, typemap) is False
+
+
+def test_keep_GD_variant_full_with_gd_keeps_direct_gene_disease_edges():
+    """GD_variant_full_with_gd is the leakage sentinel and should keep direct GD edges."""
+    typemap = {
+        "HGNC:1": {"biolink:Gene"},
+        "MONDO:1": {"biolink:DiseaseOrPhenotypicFeature"},
+    }
+
+    gd_edge = {"subject": "HGNC:1", "object": "MONDO:1", "predicate": "biolink:genetically_associated_with"}
+    assert keep_GD_variant_full_with_gd(gd_edge, typemap) is False
+
+
+def test_keep_GD_variant_full_filters_low_affinity_bindingdb_affects():
+    """GD variant cohorts should drop low-affinity BindingDB affects edges."""
+    typemap = {
+        "CHEBI:1": {"biolink:ChemicalEntity"},
+        "HGNC:1": {"biolink:Gene"},
+    }
+
+    low_affinity_edge = {
+        "subject": "CHEBI:1",
+        "object": "HGNC:1",
+        "predicate": "biolink:affects",
+        "primary_knowledge_source": "infores:bindingdb",
+        "affinity": "6.5"
+    }
+    high_affinity_edge = {
+        "subject": "CHEBI:1",
+        "object": "HGNC:1",
+        "predicate": "biolink:affects",
+        "primary_knowledge_source": "infores:bindingdb",
+        "affinity": "8.1"
+    }
+
+    assert keep_GD_variant_full(low_affinity_edge, typemap) is True
+    assert keep_GD_variant_full(high_affinity_edge, typemap) is False
+
+
+def test_keep_GD_variant_full_filters_degree_one_nodes_in_second_pass():
+    """GD variant cohorts should filter nodes marked as degree-1 in the second pass."""
+    typemap = {
+        "CHEBI:1": {"biolink:ChemicalEntity"},
+        "CHEBI:2": {"biolink:ChemicalEntity"},
+    }
+
+    edge = {"subject": "CHEBI:1", "object": "CHEBI:2", "predicate": "biolink:related_to"}
+
+    assert keep_GD_variant_full(edge, typemap) is False
+    assert keep_GD_variant_full(edge, typemap, low_degree_nodes={"CHEBI:1"}) is True
 
 
 def test_multi_filter_1_with_cd_keeps_cd_edges():

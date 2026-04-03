@@ -24,7 +24,11 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modeling.train_model import load_embeddings, load_ground_truth, create_feature_vectors, extract_node_ids_from_positives, generate_negative_samples
-from modeling.shap_analysis import compute_shap_for_top_k, save_shap_analysis
+try:
+    from modeling.shap_analysis import compute_shap_for_top_k, save_shap_analysis
+except ImportError:  # pragma: no cover - exercised when shap is unavailable
+    compute_shap_for_top_k = None
+    save_shap_analysis = None
 from sklearn.model_selection import train_test_split
 
 
@@ -138,6 +142,12 @@ def extract_model_metadata(model_dir):
         "embeddings_file": input_data.get("embeddings_file"),
         "embeddings_version": input_data.get("embeddings_version"),
         "ground_truth_file": input_data.get("ground_truth", {}).get("ground_truth_file"),
+        "pair_schema": input_data.get("pair_schema", {
+            "source_column": "final normalized drug id",
+            "target_column": "final normalized disease id",
+            "source_label": "drug",
+            "target_label": "disease"
+        }),
         "provenance": provenance
     }
     
@@ -185,40 +195,59 @@ def get_next_evaluation_version(evaluations_dir):
     return max(existing_versions) + 1 if existing_versions else 0
 
 
-def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio, model_dir, original_gt_count, ground_truth_file):
+def evaluate_single_model_core(rf_model, embeddings, positive_pairs, source_ids, target_ids, negative_ratio, model_dir, original_gt_count, ground_truth_file, pair_schema=None):
     """Core evaluation logic for a single model.
     
     Args:
         rf_model: Trained model
         embeddings: Node embeddings
         positive_pairs: Ground truth positive pairs
-        drug_ids: Unique drug IDs from ground truth
-        disease_ids: Unique disease IDs from ground truth  
+        source_ids: Unique source IDs from ground truth
+        target_ids: Unique target IDs from ground truth
         negative_ratio: Negative sampling ratio used during training
         model_dir: Directory containing the model and training_pairs.json file
+        pair_schema: Pair schema metadata from training provenance
         
     Returns:
         dict: Evaluation results including metrics, test data info, and test pairs
     """
+    if pair_schema is None:
+        pair_schema = {
+            "source_column": "final normalized drug id",
+            "target_column": "final normalized disease id",
+            "source_label": "drug",
+            "target_label": "disease"
+        }
+
+    source_label = pair_schema.get("source_label", "drug")
+    target_label = pair_schema.get("target_label", "disease")
+
     print(f"=== GROUND TRUTH & UNIVERSE ===")
     print(f"Loaded positive pairs: {len(positive_pairs)}")
-    print(f"Unique drugs in ground truth: {len(drug_ids)}")  
-    print(f"Unique diseases in ground truth: {len(disease_ids)}")
-    print(f"Total possible combinations: {len(drug_ids) * len(disease_ids)}")
+    print(f"Unique {source_label}s in ground truth: {len(source_ids)}")
+    print(f"Unique {target_label}s in ground truth: {len(target_ids)}")
+    print(f"Total possible combinations: {len(source_ids) * len(target_ids)}")
     
     # Check embedding coverage for all indications
-    all_positive_pairs, _ = load_ground_truth(ground_truth_file, embeddings=None)
-    all_drug_ids = set(pair[0] for pair in all_positive_pairs)
-    all_disease_ids = set(pair[1] for pair in all_positive_pairs)
-    drugs_with_embeddings = len([d for d in all_drug_ids if d in embeddings])
-    diseases_with_embeddings = len([d for d in all_disease_ids if d in embeddings])
+    all_positive_pairs, _ = load_ground_truth(
+        ground_truth_file,
+        embeddings=None,
+        source_column=pair_schema["source_column"],
+        target_column=pair_schema["target_column"],
+        source_label=source_label,
+        target_label=target_label
+    )
+    all_source_ids = set(pair[0] for pair in all_positive_pairs)
+    all_target_ids = set(pair[1] for pair in all_positive_pairs)
+    sources_with_embeddings = len([node_id for node_id in all_source_ids if node_id in embeddings])
+    targets_with_embeddings = len([node_id for node_id in all_target_ids if node_id in embeddings])
     
     print(f"=== EMBEDDING COVERAGE ===")
-    print(f"Drugs in original indications: {len(all_drug_ids)}, with embeddings: {drugs_with_embeddings} ({drugs_with_embeddings/len(all_drug_ids)*100:.1f}%)")
-    print(f"Diseases in original indications: {len(all_disease_ids)}, with embeddings: {diseases_with_embeddings} ({diseases_with_embeddings/len(all_disease_ids)*100:.1f}%)")
+    print(f"{source_label.capitalize()}s in original ground truth: {len(all_source_ids)}, with embeddings: {sources_with_embeddings} ({sources_with_embeddings/len(all_source_ids)*100:.1f}%)")
+    print(f"{target_label.capitalize()}s in original ground truth: {len(all_target_ids)}, with embeddings: {targets_with_embeddings} ({targets_with_embeddings/len(all_target_ids)*100:.1f}%)")
     
-    # Generate ALL possible drug-disease combinations from ground truth
-    all_combinations = [(drug, disease) for drug in drug_ids for disease in disease_ids]
+    # Generate all source-target combinations from the ground truth universe
+    all_combinations = [(source_id, target_id) for source_id in source_ids for target_id in target_ids]
     
     # Read training pairs from file (instead of reconstructing)
     training_pairs_file = os.path.join(model_dir, "training_pairs.json")
@@ -247,12 +276,12 @@ def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, d
     evaluation_positives = set(positive_pairs) - set(training_positives)
     
     print(f"=== EVALUATION SET ===") 
-    print(f"All combinations: {len(drug_ids) * len(disease_ids):,}")
+    print(f"All combinations: {len(source_ids) * len(target_ids):,}")
     print(f"Training pairs to exclude: {len(training_pairs_to_exclude)}")
     
     # Process in batches to avoid memory issues
     batch_size = 50000  # Process 50K combinations at a time
-    total_combinations = len(drug_ids) * len(disease_ids)
+    total_combinations = len(source_ids) * len(target_ids)
     
     print(f"Processing {total_combinations:,} combinations in batches of {batch_size:,}")
     
@@ -266,13 +295,13 @@ def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, d
     zero_embedding = np.zeros(embedding_dim)
     
     processed = 0
-    for i, drug_id in enumerate(drug_ids):
+    for i, source_id in enumerate(source_ids):
         batch_pairs = []
         batch_features = []
         
-        # Collect pairs for this drug with all diseases
-        for disease_id in disease_ids:
-            pair = (drug_id, disease_id)
+        # Collect pairs for this source with all targets
+        for target_id in target_ids:
+            pair = (source_id, target_id)
             
             # Skip training pairs
             if pair in training_pairs_to_exclude:
@@ -281,9 +310,9 @@ def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, d
             batch_pairs.append(pair)
             
             # Create feature vector (pad missing with zeros)
-            drug_emb = embeddings.get(drug_id, zero_embedding)
-            disease_emb = embeddings.get(disease_id, zero_embedding)
-            combined_features = np.concatenate([drug_emb, disease_emb])
+            source_emb = embeddings.get(source_id, zero_embedding)
+            target_emb = embeddings.get(target_id, zero_embedding)
+            combined_features = np.concatenate([source_emb, target_emb])
             batch_features.append(combined_features)
             
             # Process batch when it reaches batch_size
@@ -346,11 +375,12 @@ def evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, d
 
     # Add additional context to metrics dict
     metrics['training_pairs_excluded'] = len(training_pairs_to_exclude)
-    metrics['all_combinations'] = len(drug_ids) * len(disease_ids)
+    metrics['all_combinations'] = len(source_ids) * len(target_ids)
     metrics['y_true'] = y_true
     metrics['y_scores'] = y_scores
     metrics['test_pairs'] = eval_pairs
     metrics['feature_vectors'] = feature_vectors
+    metrics['pair_schema'] = pair_schema
 
     return metrics
 
@@ -685,6 +715,7 @@ def evaluate_model_simple(model_dir, shap_top_k=None):
     
     # Extract metadata from model directory
     metadata = extract_model_metadata(model_dir)
+    pair_schema = metadata["pair_schema"]
     
     model_path = metadata["model_file"]
     ground_truth_file = metadata["ground_truth_file"]
@@ -719,23 +750,48 @@ def evaluate_model_simple(model_dir, shap_top_k=None):
     # Load embeddings and ground truth
     embeddings = load_embeddings(embeddings_file)
     # Get original ground truth count before filtering
-    _, original_ground_truth_stats = load_ground_truth(ground_truth_file, embeddings=None)
+    _, original_ground_truth_stats = load_ground_truth(
+        ground_truth_file,
+        embeddings=None,
+        source_column=pair_schema["source_column"],
+        target_column=pair_schema["target_column"],
+        source_label=pair_schema["source_label"],
+        target_label=pair_schema["target_label"]
+    )
     original_gt_count = original_ground_truth_stats["clean_rows"]
     # Load filtered ground truth
-    positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
-    drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
+    positive_pairs, ground_truth_stats = load_ground_truth(
+        ground_truth_file,
+        embeddings,
+        source_column=pair_schema["source_column"],
+        target_column=pair_schema["target_column"],
+        source_label=pair_schema["source_label"],
+        target_label=pair_schema["target_label"]
+    )
+    source_ids, target_ids = extract_node_ids_from_positives(positive_pairs)
     
     # Get negative_ratio from model provenance
     negative_ratio = metadata["provenance"]["model_parameters"]["negative_ratio"]
     
     print(f"Using negative_ratio={negative_ratio} from model provenance")
-    print(f"Creating comprehensive evaluation on all drug-disease combinations...")
-    print(f"Using {len(drug_ids)} drugs and {len(disease_ids)} diseases from ground truth")
+    print(f"Creating comprehensive evaluation on all {pair_schema['source_label']}-{pair_schema['target_label']} combinations...")
+    print(f"Using {len(source_ids)} {pair_schema['source_label']}s and {len(target_ids)} {pair_schema['target_label']}s from ground truth")
     
     # Use shared evaluation logic
-    eval_results = evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio, model_dir, original_gt_count, ground_truth_file)
-    
-    print(f"Generated {eval_results['all_combinations']:,} total drug-disease combinations")
+    eval_results = evaluate_single_model_core(
+        rf_model,
+        embeddings,
+        positive_pairs,
+        source_ids,
+        target_ids,
+        negative_ratio,
+        model_dir,
+        original_gt_count,
+        ground_truth_file,
+        pair_schema=pair_schema
+    )
+
+    print(f"Generated {eval_results['all_combinations']:,} total {pair_schema['source_label']}-{pair_schema['target_label']} combinations")
     print(f"Training pairs to exclude: {eval_results['training_pairs_excluded']:,}")
     print(f"Evaluating on {eval_results['evaluation_combinations']:,} combinations")
     print(f"Evaluation set: {eval_results['evaluation_combinations']:,} combinations ({eval_results['evaluation_positives']:,} known positives)")
@@ -751,6 +807,7 @@ def evaluate_model_simple(model_dir, shap_top_k=None):
         "model_dir": model_dir,
         "embeddings_file": embeddings_file,
         "ground_truth_file": ground_truth_file,
+        "pair_schema": pair_schema,
         "evaluation_summary": {
             "all_combinations": eval_results['all_combinations'],
             "training_pairs_excluded": eval_results['training_pairs_excluded'],
@@ -785,6 +842,8 @@ def evaluate_model_simple(model_dir, shap_top_k=None):
 
     # Perform SHAP analysis if requested (0 or negative means ALL true positives)
     if shap_top_k is not None:
+        if compute_shap_for_top_k is None or save_shap_analysis is None:
+            raise ImportError("SHAP analysis requested, but the optional 'shap' dependency is not installed.")
         print(f"\n=== Performing SHAP analysis for top {shap_top_k} true positive predictions ===")
         shap_results = compute_shap_for_top_k(
             model=rf_model,
@@ -850,6 +909,7 @@ def evaluate_multiple_models_with_provenance(model_configs):
     for i, model_data in enumerate(model_metadata):
         metadata = model_data['metadata']
         label = model_data['label']
+        pair_schema = metadata["pair_schema"]
         
         model_path = metadata['model_file']
         graph_dir = metadata['graph_dir']
@@ -883,11 +943,25 @@ def evaluate_multiple_models_with_provenance(model_configs):
         # Load embeddings and ground truth
         embeddings = load_embeddings(embeddings_file)
         # Get original ground truth count before filtering
-        _, original_ground_truth_stats = load_ground_truth(ground_truth_file, embeddings=None)
+        _, original_ground_truth_stats = load_ground_truth(
+            ground_truth_file,
+            embeddings=None,
+            source_column=pair_schema["source_column"],
+            target_column=pair_schema["target_column"],
+            source_label=pair_schema["source_label"],
+            target_label=pair_schema["target_label"]
+        )
         original_gt_count = original_ground_truth_stats["clean_rows"]
         # Load filtered ground truth
-        positive_pairs, ground_truth_stats = load_ground_truth(ground_truth_file, embeddings)
-        drug_ids, disease_ids = extract_node_ids_from_positives(positive_pairs)
+        positive_pairs, ground_truth_stats = load_ground_truth(
+            ground_truth_file,
+            embeddings,
+            source_column=pair_schema["source_column"],
+            target_column=pair_schema["target_column"],
+            source_label=pair_schema["source_label"],
+            target_label=pair_schema["target_label"]
+        )
+        source_ids, target_ids = extract_node_ids_from_positives(positive_pairs)
         
         # Get negative ratio from model provenance
         negative_ratio = 1
@@ -895,11 +969,22 @@ def evaluate_multiple_models_with_provenance(model_configs):
             negative_ratio = model_info["model_provenance"]["model_parameters"].get("negative_ratio", 1)
         
         print(f"  Using negative_ratio={negative_ratio} from model provenance")
-        print(f"  Using {len(drug_ids)} drugs and {len(disease_ids)} diseases from ground truth")
+        print(f"  Using {len(source_ids)} {pair_schema['source_label']}s and {len(target_ids)} {pair_schema['target_label']}s from ground truth")
         
         # Use shared evaluation logic
         model_dir = os.path.dirname(model_path)
-        eval_results = evaluate_single_model_core(rf_model, embeddings, positive_pairs, drug_ids, disease_ids, negative_ratio, model_dir, original_gt_count, ground_truth_file)
+        eval_results = evaluate_single_model_core(
+            rf_model,
+            embeddings,
+            positive_pairs,
+            source_ids,
+            target_ids,
+            negative_ratio,
+            model_dir,
+            original_gt_count,
+            ground_truth_file,
+            pair_schema=pair_schema
+        )
         
         print(f"  Total possible combinations: {eval_results['all_combinations']:,}")
         print(f"  Training pairs to exclude: {eval_results['training_pairs_excluded']:,}")
@@ -925,8 +1010,8 @@ def evaluate_multiple_models_with_provenance(model_configs):
             'evaluation_positives': eval_results['evaluation_positives'],
             'evaluation_negatives': eval_results['evaluation_negatives'],
             'negative_ratio_used': negative_ratio,
-            'total_drugs': len(drug_ids),
-            'total_diseases': len(disease_ids),
+            'total_drugs': len(source_ids),
+            'total_diseases': len(target_ids),
             'training_pairs_excluded': eval_results['training_pairs_excluded']
         }
         
@@ -953,15 +1038,16 @@ def evaluate_multiple_models_with_provenance(model_configs):
                 "graph_dir": graph_dir,
                 "embeddings_file": embeddings_file,
                 "embeddings_version": embeddings_version,
-                "ground_truth": ground_truth_stats
+                "ground_truth": ground_truth_stats,
+                "pair_schema": pair_schema
             },
             "evaluation_parameters": {
                 "k_values": k_values,
                 "negative_ratio_used": negative_ratio,
                 "evaluation_scope": "comprehensive_drug_disease_combinations",
                 "training_pairs_excluded": True,
-                "total_drugs": len(drug_ids),
-                "total_diseases": len(disease_ids),
+                "total_drugs": len(source_ids),
+                "total_diseases": len(target_ids),
                 "total_possible_combinations": eval_results['all_combinations'],
                 "training_pairs_excluded_count": eval_results['training_pairs_excluded']
             },
