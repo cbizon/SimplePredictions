@@ -7,12 +7,12 @@ name = "simplepredictions"
 version = "0.1.0"
 description = "Biomedical knowledge graph link prediction with PecanPy and Random Forest models."
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "flask>=3.0",
     "jsonlines>=4.0",
     "matplotlib>=3.8",
-    "numpy>=1.26",
+    "numpy>=1.26,<2.0",
     "pandas>=2.2",
     "pecanpy>=2.0.9",
     "requests>=2.32",
